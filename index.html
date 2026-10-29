@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ScoreBoard ระบบบันทึกคะแนนนักเรียน</title>
+
+  <meta name="theme-color" content="#7F2BE3">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="ScoreBoard">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Mitr:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root{--violet:#7F2BE3;--bg:#F6F3FC;--ink:#241B3A}
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:var(--bg);font-family:"Mitr",sans-serif;color:var(--ink)}
+    #app{position:fixed;inset:0;display:flex;flex-direction:column;
+         padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+    #frame{flex:1;width:100%;border:0;background:var(--bg)}
+
+    /* หน้าโหลด */
+    #splash{position:fixed;inset:0;display:grid;place-items:center;align-content:center;gap:14px;
+            background:linear-gradient(160deg,#1D1533,#3E2A6E);color:#fff;z-index:5;transition:opacity .4s}
+    #splash.hide{opacity:0;pointer-events:none}
+    #splash img{width:84px;height:84px;border-radius:22px;box-shadow:0 14px 36px rgba(127,43,227,.5)}
+    #splash b{font-size:20px;font-weight:600}
+    #splash small{color:#cbc2e6}
+    .spin{width:28px;height:28px;border:3px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:s .8s linear infinite}
+    @keyframes s{to{transform:rotate(360deg)}}
+
+    /* แถบแจ้งเตือน (ออฟไลน์ / โหลดไม่ขึ้น) */
+    #notice{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:10;
+            background:#fff;border:1px solid #E9E3F6;border-radius:16px;padding:14px 16px;
+            box-shadow:0 12px 32px rgba(36,27,58,.18);display:none;gap:10px;align-items:center;flex-wrap:wrap}
+    #notice.show{display:flex}
+    #notice span{flex:1;min-width:200px;font-size:14px}
+    #notice a,#notice button{min-height:44px;padding:10px 16px;border-radius:10px;border:0;font:inherit;font-size:14px;
+            background:var(--violet);color:#fff;text-decoration:none;cursor:pointer;display:inline-flex;align-items:center}
+    #notice button.ghost{background:#F1E7FE;color:var(--violet)}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <iframe id="frame" title="ScoreBoard" allow="clipboard-write; fullscreen" referrerpolicy="no-referrer-when-downgrade"></iframe>
+  </div>
+
+  <div id="splash">
+    <img src="icons/icon-192.png" alt="ScoreBoard">
+    <b>ScoreBoard</b>
+    <small>ระบบบันทึกคะแนนนักเรียน</small>
+    <div class="spin"></div>
+  </div>
+
+  <div id="notice" role="status">
+    <span id="noticeText"></span>
+    <button class="ghost" id="retryBtn" type="button">ลองใหม่</button>
+    <a id="openDirect" target="_blank" rel="noopener">เปิดในเบราว์เซอร์</a>
+  </div>
+
+  <script>
+    /* ==========================================================
+       ตั้งค่า: ใส่ URL ของ Web App ที่ Deploy แล้ว (ลงท้ายด้วย /exec)
+       ========================================================== */
+    const APP_URL = 'https://script.google.com/macros/s/AKfycbxkCIc5bB-sogMCsSPJ6TtFAnfh25v30k4k3MS8_tlwHS5C4srk3LF5CUlYMtzgiotppA/exec';
+
+    const frame = document.getElementById('frame');
+    const splash = document.getElementById('splash');
+    const notice = document.getElementById('notice');
+    const noticeText = document.getElementById('noticeText');
+    const openDirect = document.getElementById('openDirect');
+    let loaded = false, slowTimer = null;
+
+    openDirect.href = APP_URL;
+
+    function showNotice(msg){ noticeText.textContent = msg; notice.classList.add('show'); }
+    function hideNotice(){ notice.classList.remove('show'); }
+
+    function loadApp(){
+      hideNotice();
+      loaded = false;
+      splash.classList.remove('hide');
+
+      if (!navigator.onLine){
+        splash.classList.add('hide');
+        showNotice('ไม่มีสัญญาณอินเทอร์เน็ต — ระบบต้องออนไลน์เพื่อบันทึกและโหลดข้อมูล');
+        return;
+      }
+      if (APP_URL.indexOf('DEPLOYMENT_ID') > -1){
+        splash.classList.add('hide');
+        showNotice('ยังไม่ได้ตั้งค่า APP_URL ในไฟล์ index.html');
+        return;
+      }
+      frame.src = APP_URL;
+      clearTimeout(slowTimer);
+      slowTimer = setTimeout(() => {
+        if (!loaded) showNotice('โหลดนานผิดปกติ หากขึ้นหน้าเข้าสู่ระบบ Google ให้เปิดในเบราว์เซอร์แทน');
+      }, 15000);
+    }
+
+    frame.addEventListener('load', () => {
+      if (!frame.src || frame.src === 'about:blank') return;
+      loaded = true;
+      clearTimeout(slowTimer);
+      splash.classList.add('hide');
+    });
+
+    window.addEventListener('online', loadApp);
+    window.addEventListener('offline', () => showNotice('ออฟไลน์อยู่ — การบันทึกจะทำงานเมื่อกลับมาออนไลน์'));
+    document.getElementById('retryBtn').addEventListener('click', () => { frame.src = 'about:blank'; loadApp(); });
+
+    loadApp();
+
+    if ('serviceWorker' in navigator){
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
+  </script>
+</body>
+</html>

@@ -16,6 +16,8 @@ await env.withSecurityRulesDisabled(async c => {
   await setDoc(doc(db, 'users', HR), { role: 'teacher', active: true, homerooms: ['ม.4|1'] });
   await setDoc(doc(db, 'subjects', 'S1'), { subject_id: 'S1', level: 'ม.4', room: '1', semester: '2', academic_year: '2569', teachers: [T1], teacher_names: { [T1]: 'ครู 1' }, config: { locked: false } });
   await setDoc(doc(db, 'subjects', 'S2'), { subject_id: 'S2', level: 'ม.5', room: '1', semester: '2', academic_year: '2569', teachers: [], teacher_names: {}, config: { locked: false } });
+  await setDoc(doc(db, 'subjects', 'S3'), { subject_id: 'S3', level: 'ม.4', room: '2', rooms: ['2', '1'], room_keys: ['ม.4|2', 'ม.4|1'], semester: '2', academic_year: '2569', teachers: [T2], config: {} });
+  await setDoc(doc(db, 'scoreSheets', 'S3'), { scores: {} });
   await setDoc(doc(db, 'scoreSheets', 'S1'), { scores: {} });
   await setDoc(doc(db, 'scoreSheets', 'S2'), { scores: {} });
   await setDoc(doc(db, 'attendanceBook', 'S1'), { days: {} });
@@ -45,6 +47,8 @@ await t('teacher cannot pick own homeroom (admin only)', assertFails(updateDoc(d
 await t('teacher cannot make self admin', assertFails(updateDoc(doc(as(T2), 'users', T2), { role: 'admin' })));
 await t('teacher cannot edit another user', assertFails(updateDoc(doc(as(T2), 'users', T1), { homerooms: arrayUnion('ม.5|1') })));
 await t('admin edits user homerooms', assertSucceeds(updateDoc(doc(as(A), 'users', T1), { homerooms: arrayUnion('ม.6|1') })));
+await t('homeroom teacher reads combined subject that includes own room', assertSucceeds(getDoc(doc(as(HR), 'scoreSheets', 'S3'))));
+await t('teacher cannot change rooms of combined subject', assertFails(updateDoc(doc(as(T2), 'subjects', 'S3'), { rooms: ['2'] })));
 await t('subject teacher writes scores', assertSucceeds(setDoc(doc(as(T1), 'scoreSheets', 'S1'), { scores: { a: 1 } }, { merge: true })));
 
 await env.cleanup();

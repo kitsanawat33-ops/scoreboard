@@ -915,3 +915,26 @@ nav .nav-label:first-child { padding-top: 2px; }
 .pt-row small { display: block; color: var(--ink-soft); font-size: 12px; }
 .pt-row input { min-height: 0; padding: 7px 10px; }
 @media (max-width: 640px) { .pt-row { grid-template-columns: 1fr; } }
+
+/* ---------- ระหว่างตรวจสอบการเข้าสู่ระบบ ---------- */
+.auth-wait { display: none; align-items: center; justify-content: center; gap: 10px; min-height: 48px; color: var(--ink-soft); font-size: 14px; }
+body.auth-pending .auth-wait { display: flex; }
+body.auth-pending .google-btn, body.auth-pending .login-foot { display: none; }
+.auth-spin { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--fb-blue-soft); border-top-color: var(--fb-blue); animation: authspin .8s linear infinite; }
+@keyframes authspin { to { transform: rotate(360deg); } }
+
+/* ---------- หน้านักเรียน: แยกห้อง ---------- */
+.stu-bar { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; margin-bottom: 8px; }
+.stu-rooms { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+.stu-room { border: 1.5px solid var(--line-light); background: var(--surface); border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer; min-height: 0; display: inline-flex; gap: 6px; align-items: center; }
+.stu-room small { font-size: 11.5px; color: var(--ink-soft); background: var(--surface-alt); border-radius: 999px; padding: 0 7px; }
+.stu-room.on { border-color: var(--fb-blue); background: var(--fb-blue); color: #fff; }
+.stu-room.on small { background: rgba(255,255,255,.25); color: #fff; }
+#stuSearch { width: 220px; }
+.stu-sep td { background: var(--surface-alt); font-weight: 600; font-size: 13px; padding-top: 6px; padding-bottom: 6px; }
+@media (max-width: 640px) { #stuSearch { width: 100%; } }
+
+/* ---------- วิชาเรียนรวม ---------- */
+.comb-chip { display: inline-block; font-size: 11px; background: var(--purple-soft); color: var(--purple); border-radius: 999px; padding: 1px 8px; margin-left: 4px; font-weight: 600; }
+.room-tag { display: inline-block; font-size: 11px; background: var(--fb-blue-soft); color: var(--fb-blue); border-radius: 6px; padding: 0 6px; margin-left: 6px; font-weight: 600; vertical-align: middle; }
+.att-roombar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; font-size: 13px; color: var(--ink-soft); }

@@ -1,12 +1,25 @@
 // ตัวเชื่อม Firebase SDK (เปลี่ยนเวอร์ชันได้ที่เดียว)
 const V = '12.0.0';
-const appMod = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-app.js`);
-const authMod = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-auth.js`);
-const fsMod = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-firestore.js`);
+// โหลด 3 ส่วนพร้อมกัน (เร็วกว่าโหลดทีละส่วน)
+const [appMod, authMod, fsMod] = await Promise.all([
+  import(`https://www.gstatic.com/firebasejs/${V}/firebase-app.js`),
+  import(`https://www.gstatic.com/firebasejs/${V}/firebase-auth.js`),
+  import(`https://www.gstatic.com/firebasejs/${V}/firebase-firestore.js`)
+]);
 import { firebaseConfig } from './config.js';
 
 export const app = appMod.initializeApp(firebaseConfig);
-export const auth = authMod.getAuth(app);
+// จำการเข้าสู่ระบบไว้ในเครื่องแบบถาวร (ไม่ต้องล็อกอินใหม่ทุกครั้งที่รีเฟรช/เปิดแอป)
+let authInst;
+try {
+  authInst = authMod.initializeAuth(app, {
+    persistence: [authMod.indexedDBLocalPersistence, authMod.browserLocalPersistence],
+    popupRedirectResolver: authMod.browserPopupRedirectResolver
+  });
+} catch (e) {
+  authInst = authMod.getAuth(app);
+}
+export const auth = authInst;
 
 // เก็บข้อมูลไว้ในเครื่อง (IndexedDB) — เปิดแอปซ้ำเร็วขึ้น และใช้ต่อได้ตอนเน็ตหลุด
 // การบันทึกตอนออฟไลน์จะเข้าคิวในเครื่องและส่งเองเมื่อกลับมาออนไลน์

@@ -145,8 +145,7 @@ export async function prefetchSubject(subjectId) {
     const s = await read(ref('subjects', String(subjectId)));
     if (!s) return;
     const id = String(subjectId);
-    [ref('rosters', rosterId(s.semester, s.academic_year, s.level, s.room)),
-     ref('homeroomBook', rosterId(s.semester, s.academic_year, s.level, s.room)),
+    [...subjRooms(s).flatMap(r => [ref('rosters', rosterId(s.semester, s.academic_year, s.level, r)), ref('homeroomBook', rosterId(s.semester, s.academic_year, s.level, r))]),
      ref('scoreSheets', id), ref('attendanceBook', id), ref('taskBook', id)]
       .forEach(r => listen(r).ready.catch(() => {}));
   } catch (e) {}
@@ -472,6 +471,25 @@ async function rosterStudents(sem, yr, level, room) {
     .sort((a, b) => String(a.student_id).localeCompare(String(b.student_id), 'th', { numeric: true }));
 }
 
+// ห้องของวิชา (วิชาเรียนรวมมีหลายห้อง)
+export const subjRooms = s => {
+  const r = (Array.isArray(s.rooms) && s.rooms.length ? s.rooms : [s.room]).map(str).filter(Boolean);
+  return [...new Set(r)].sort((a, b) => a.localeCompare(b, 'th', { numeric: true }));
+};
+const roomKeys = (level, rooms) => rooms.map(r => `${str(level)}|${r}`);
+// นักเรียนของวิชา (รวมทุกห้อง เรียงตามห้องแล้วตามเลขประจำตัว)
+async function subjectStudents(subject) {
+  const rooms = subjRooms(subject);
+  const lists = await Promise.all(rooms.map(r => rosterStudents(subject.semester, subject.academic_year, subject.level, r)
+    .then(l => l.map(s => Object.assign(s, { room: r })))));
+  return lists.flat();
+}
+async function subjectMorning(subject, date) {
+  const books = await Promise.all(subjRooms(subject).map(r =>
+    read(ref('homeroomBook', rosterId(subject.semester, subject.academic_year, subject.level, r))).catch(() => null)));
+  return Object.assign({}, ...books.map(b => ((b && b.days) || {})[date] || {}));
+}
+
 async function upsertStudents(records) {
   // records: [{student_id, citizen_id, first_name, last_name, class_level, room, semester, academic_year, status}]
   const groups = {};
@@ -636,6 +654,7 @@ export async function deleteStudentsByRoom(level, room, semester, academicYear) 
 // ---------------------------------------------------------------------
 function subjectOut(d) {
   const s = Object.assign({}, d);
+  s.rooms = subjRooms(d);
   S.subjectCache[s.subject_id] = d;
   return s;
 }
@@ -663,8 +682,8 @@ export async function getSubjectCatalog(semester, academicYear) {
   const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
   const q = F.query(F.collection(db, 'subjects'), F.where('semester', '==', sem), F.where('academic_year', '==', yr));
   const docs = (await F.getDocs(q)).docs.map(d => d.data()).filter(s => s.status !== 'INACTIVE');
-  return docs.map(s => ({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, level: s.level, room: s.room,
-    teachers: s.teachers || [], teacher_names: s.teacher_names || {}, planned_teacher: s.planned_teacher || '', credit: (s.config || {}).credit })).sort(subjectSort);
+  return docs.map(s => ({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, level: s.level, room: s.room, rooms: subjRooms(s),
+    teachers: s.teachers || [], teacher_names: s.teacher_names || {}, planned_teacher: s.planned_teacher || '', planned_teachers: s.planned_teachers || (s.planned_teacher ? [s.planned_teacher] : []), credit: (s.config || {}).credit })).sort(subjectSort);
 }
 export async function getRoomList(semester, academicYear) {
   const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
@@ -707,9 +726,12 @@ export async function linkPlannedTeachers(semester, academicYear) {
   users.filter(u => u.active !== false).forEach(u => { const k = nname(u.name); if (k) byName[k] = u; });
   const ops = [];
   catalog.forEach(s => {
-    const u = s.planned_teacher && byName[nname(s.planned_teacher)];
-    if (!u || (s.teachers || []).includes(u.email)) return;
-    ops.push([ref('subjects', s.subject_id), u]);
+    (s.planned_teachers || []).forEach(n => {
+      const u = byName[nname(n)];
+      if (!u || (s.teachers || []).includes(u.email)) return;
+      ops.push([ref('subjects', s.subject_id), u]);
+      s.teachers = [...(s.teachers || []), u.email];
+    });
   });
   for (let i = 0; i < ops.length; i += 400) {
     const batch = F.writeBatch(db);
@@ -729,7 +751,7 @@ export async function getWorkload(semester, academicYear) {
 export async function getHomeroomGrades(key, semester, academicYear) {
   const [level, room] = str(key).split('|');
   if (!seeAll() && !isAdmin() && !(S.me.homerooms || []).includes(str(key))) throw new Error('คุณไม่ได้เป็นครูประจำชั้นของห้องนี้');
-  const catalog = (await getSubjectCatalog(semester, academicYear)).filter(s => str(s.level) === level && str(s.room) === room);
+  const catalog = (await getSubjectCatalog(semester, academicYear)).filter(s => str(s.level) === level && s.rooms.includes(room));
   const subjects = [], students = {};
   const all = await Promise.all(catalog.map(s => getScoreEntryData(s.subject_id).catch(() => null)));
   for (let i = 0; i < catalog.length; i++) {
@@ -737,7 +759,7 @@ export async function getHomeroomGrades(key, semester, academicYear) {
     if (!data) continue;
     const credit = num(data.config.credit || 0);
     subjects.push({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, credit, teachers: s.teachers, teacher_names: s.teacher_names });
-    data.rows.forEach(r => {
+    data.rows.filter(r => !r.room || str(r.room) === room).forEach(r => {
       const st = students[r.student_id] = students[r.student_id] || { student_id: r.student_id, first_name: r.first_name, last_name: r.last_name, grades: {}, q: 0, c: 0 };
       st.grades[s.subject_id] = { grade: r.grade, total: r.total, status: r.status };
       if (credit > 0 && r.status === 'NORMAL' && r.grade !== '' && r.grade != null) { st.q += num(r.point || 0) * credit; st.c += credit; }
@@ -772,6 +794,8 @@ export async function saveSubject(subject) {
     max_score: num(subject.max_score || 100), status: str(subject.status || 'ACTIVE'),
     teachers: teachers.length ? teachers : [S.me.email], updated_at: nowIso()
   });
+  if (prev && subjRooms(prev).length > 1) { rec.room = subjRooms(prev)[0]; rec.rooms = subjRooms(prev); rec.room_keys = roomKeys(rec.level, rec.rooms); }
+  else { rec.rooms = [rec.room]; rec.room_keys = roomKeys(rec.level, rec.rooms); }
   await commit(F.setDoc(ref('subjects', id), rec));
   S.subjectCache[id] = rec;
   return getSubjects(sem, yr);
@@ -784,35 +808,44 @@ export async function importSubjects(list, opts = {}) {
   if (!Array.isArray(list) || !list.length) throw new Error('ไม่มีรายวิชาที่เลือก');
   const q = F.query(F.collection(db, 'subjects'), F.where('semester', '==', sem), F.where('academic_year', '==', yr));
   const current = (await F.getDocs(q)).docs.map(d => d.data()).filter(s => s.status !== 'INACTIVE');
-  const key = s => [s.subject_code, s.subject_name, s.level, s.room].map(str).join('|');
-  const have = new Map(current.map(s => [key(s), s]));
-  const ops = [];
-  let created = 0, updated = 0, skipped = 0;
+  // จับคู่วิชาเดิมด้วย รหัส+ชื่อ+ชั้น+ห้อง (วิชาเรียนรวม: ทุกห้องที่รวม)
+  const key = (s, r) => [s.subject_code, s.subject_name, s.level, r].map(str).join('|');
+  const have = new Map();
+  current.forEach(s => subjRooms(s).forEach(r => have.set(key(s, r), s)));
+  const ops = [], toMerge = [];
+  let created = 0, updated = 0, skipped = 0, merged = 0;
   list.forEach(x => {
-    const rec = { subject_code: str(x.subject_code), subject_name: str(x.subject_name), level: str(x.level), room: str(x.room || '1') };
+    const rooms = [...new Set((Array.isArray(x.rooms) && x.rooms.length ? x.rooms : [x.room || '1']).map(str))].sort((p, q2) => p.localeCompare(q2, 'th', { numeric: true }));
+    const rec = { subject_code: str(x.subject_code), subject_name: str(x.subject_name), level: str(x.level), room: rooms[0], rooms, room_keys: roomKeys(x.level, rooms) };
     if (!rec.subject_name || !rec.level) { skipped++; return; }
     const teachers = (x.teachers || []).map(e => str(e).toLowerCase()).filter(Boolean);
+    const planned = [...new Set((x.planned_teachers || (x.planned_teacher ? [x.planned_teacher] : [])).map(str).filter(Boolean))];
     const credit = Number(x.credit) || 0;
-    const prev = have.get(key(rec));
-    if (prev) {
+    const prevs = [...new Set(rooms.map(r => have.get(key(rec, r))).filter(Boolean))];
+    if (prevs.length) {
       if (!opts.update) { skipped++; return; }
-      const patch = { updated_at: nowIso() };
-      if (str(x.planned_teacher)) patch.planned_teacher = str(x.planned_teacher);
-      if (credit) patch.config = Object.assign({}, prev.config || {}, { credit });
-      if (teachers.length) patch.teachers = [...new Set([...(prev.teachers || []), ...teachers])];
-      if (teachers.length) patch.teacher_names = Object.assign({}, prev.teacher_names || {}, x.teacher_names || {});
-      ops.push([ref('subjects', prev.subject_id), patch, true]);
-      Object.assign(prev, patch);
+      prevs.forEach(prev => {
+        const patch = { updated_at: nowIso() };
+        if (planned.length) { patch.planned_teachers = planned; patch.planned_teacher = planned[0]; }
+        if (credit) patch.config = Object.assign({}, prev.config || {}, { credit });
+        if (teachers.length) patch.teachers = [...new Set([...(prev.teachers || []), ...teachers])];
+        if (teachers.length) patch.teacher_names = Object.assign({}, prev.teacher_names || {}, x.teacher_names || {});
+        ops.push([ref('subjects', prev.subject_id), patch, true]);
+        Object.assign(prev, patch);
+      });
+      // ไฟล์บอกว่าเรียนรวม แต่ในระบบยังแยกกัน (หรือยังขาดบางห้อง) → รวมให้
+      const covered = new Set(prevs.flatMap(subjRooms));
+      if (rooms.length > 1 && (prevs.length > 1 || rooms.some(r => !covered.has(r)))) toMerge.push({ ids: prevs.map(p => p.subject_id), rooms });
       updated++;
       return;
     }
     const id = uid(10);
     const doc = Object.assign({ config: Object.assign(defaultConfig(), credit ? { credit } : {}), items: {}, tasks: {} }, rec, {
       subject_id: id, semester: sem, academic_year: yr, max_score: 100, status: 'ACTIVE',
-      teachers, teacher_names: x.teacher_names || {}, planned_teacher: str(x.planned_teacher), updated_at: nowIso(), source: 'timetable'
+      teachers, teacher_names: x.teacher_names || {}, planned_teacher: planned[0] || '', planned_teachers: planned, updated_at: nowIso(), source: 'timetable'
     });
     ops.push([ref('subjects', id), doc, false]);
-    have.set(key(rec), doc);
+    rooms.forEach(r => have.set(key(rec, r), doc));
     created++;
   });
   for (let i = 0; i < ops.length; i += 400) {
@@ -820,10 +853,119 @@ export async function importSubjects(list, opts = {}) {
     ops.slice(i, i + 400).forEach(([r, d, merge]) => merge ? batch.set(r, d, { merge: true }) : batch.set(r, d));
     await commit(batch.commit());
   }
+  for (const m of toMerge) {
+    try {
+      if (m.ids.length > 1) await mergeSubjects(m.ids, { quiet: true });
+      const s = await read(ref('subjects', m.ids[0]));
+      const want = [...new Set([...subjRooms(s), ...m.rooms])].sort((p, q2) => p.localeCompare(q2, 'th', { numeric: true }));
+      if (want.length !== subjRooms(s).length) await commit(F.updateDoc(ref('subjects', s.subject_id), { rooms: want, room: want[0], room_keys: roomKeys(s.level, want) }));
+      merged++;
+    } catch (e) { console.warn('merge on import failed', e); }
+  }
   const terms = registeredTerms();
   if (!terms.includes(`${sem}/${yr}`)) await saveTerms([...terms, `${sem}/${yr}`]);
   try { await linkPlannedTeachers(sem, yr); } catch (e) {}
-  return { ok: true, created, updated, skipped, registeredTerms: registeredTerms(), subjects: await getSubjects(sem, yr) };
+  return { ok: true, created, updated, skipped, merged, registeredTerms: registeredTerms(), subjects: await getSubjects(sem, yr) };
+}
+
+// ---------------------------------------------------------------------
+// วิชาเรียนรวม: รวมหลายห้องเป็นวิชาเดียว / แยกห้องออก
+// ---------------------------------------------------------------------
+const byRoomThenCode = (a, b) => subjRooms(a)[0].localeCompare(subjRooms(b)[0], 'th', { numeric: true });
+// รวมวิชา (ชั้นเดียวกัน ภาคเรียนเดียวกัน) — ข้อมูลเดิมทั้งหมดย้ายมารวมที่วิชาแรก
+export async function mergeSubjects(ids, opts = {}) {
+  requireAdmin();
+  const list = (await Promise.all([...new Set(ids.map(String))].map(id => read(ref('subjects', id))))).filter(Boolean);
+  if (list.length < 2) throw new Error('ต้องเลือกอย่างน้อย 2 วิชา');
+  const L = str(list[0].level), sem = str(list[0].semester), yr = str(list[0].academic_year);
+  if (list.some(s => str(s.level) !== L || str(s.semester) !== sem || str(s.academic_year) !== yr)) throw new Error('รวมได้เฉพาะวิชาชั้นเดียวกันในภาคเรียนเดียวกัน');
+  list.sort(byRoomThenCode);
+  const main = list[0], others = list.slice(1);
+  const [sheets, atts, tbs] = await Promise.all(['scoreSheets', 'attendanceBook', 'taskBook'].map(c => Promise.all(list.map(s => read(ref(c, s.subject_id))))));
+  const items = Object.assign({}, main.items || {}), tasks = Object.assign({}, main.tasks || {});
+  const sheet = Object.assign({ scores: {}, statuses: {} }, sheets[0] || {}), att = Object.assign({ days: {}, log: {} }, atts[0] || {}), tb = Object.assign({ tasks: {} }, tbs[0] || {});
+  sheet.scores = Object.assign({}, sheet.scores); sheet.statuses = Object.assign({}, sheet.statuses || {});
+  att.days = Object.assign({}, att.days); att.log = Object.assign({}, att.log || {}); tb.tasks = Object.assign({}, tb.tasks);
+  const sameItem = (p, q2) => str(p.item_name) === str(q2.item_name) && str(p.category) === str(q2.category) && !!p.is_retake === !!q2.is_retake && p.status !== 'INACTIVE';
+  others.forEach((o, k) => {
+    const imap = {}, tmap = {};
+    Object.values(o.items || {}).forEach(it => {
+      const m = Object.values(items).find(x => sameItem(x, it));
+      if (m) imap[it.item_id] = m.item_id;
+      else { const nid = items[it.item_id] ? uid(12) : it.item_id; items[nid] = Object.assign({}, it, { item_id: nid, subject_id: main.subject_id }); imap[it.item_id] = nid; }
+    });
+    Object.values(o.tasks || {}).forEach(t => {
+      const m = Object.values(tasks).find(x => str(x.task_name) === str(t.task_name) && x.status !== 'INACTIVE');
+      if (m) tmap[t.task_id] = m.task_id;
+      else { const nid = tasks[t.task_id] ? uid(12) : t.task_id; tasks[nid] = Object.assign({}, t, { task_id: nid, subject_id: main.subject_id }); tmap[t.task_id] = nid; }
+    });
+    const sh = sheets[k + 1] || {};
+    Object.entries(sh.scores || {}).forEach(([sid, m]) => {
+      const tgt = sheet.scores[sid] = Object.assign({}, sheet.scores[sid] || {});
+      Object.entries(m || {}).forEach(([iid, v]) => { tgt[imap[iid] || iid] = v; });
+    });
+    Object.assign(sheet.statuses, sh.statuses || {});
+    const ab = atts[k + 1] || {};
+    Object.entries(ab.days || {}).forEach(([d, m]) => { att.days[d] = Object.assign({}, att.days[d] || {}, m); });
+    Object.assign(att.log, ab.log || {});
+    const t2 = tbs[k + 1] || {};
+    Object.entries(t2.tasks || {}).forEach(([tid, m]) => { const nt = tmap[tid] || tid; tb.tasks[nt] = Object.assign({}, tb.tasks[nt] || {}, m); });
+  });
+  const rooms = [...new Set(list.flatMap(subjRooms))].sort((p, q2) => p.localeCompare(q2, 'th', { numeric: true }));
+  const planned = [...new Set(list.flatMap(s => s.planned_teachers || (s.planned_teacher ? [s.planned_teacher] : [])))];
+  const mainDoc = Object.assign({}, main, {
+    items, tasks, rooms, room: rooms[0], room_keys: roomKeys(L, rooms),
+    teachers: [...new Set(list.flatMap(s => s.teachers || []))],
+    teacher_names: Object.assign({}, ...list.map(s => s.teacher_names || {})),
+    planned_teachers: planned, planned_teacher: planned[0] || '', updated_at: nowIso()
+  });
+  const batch = F.writeBatch(db);
+  batch.set(ref('subjects', main.subject_id), mainDoc);
+  batch.set(ref('scoreSheets', main.subject_id), Object.assign(sheet, { subject_id: main.subject_id }));
+  batch.set(ref('attendanceBook', main.subject_id), Object.assign(att, { subject_id: main.subject_id }));
+  batch.set(ref('taskBook', main.subject_id), Object.assign(tb, { subject_id: main.subject_id }));
+  // วิชาที่ถูกรวม: ปิดใช้งาน (ข้อมูลเดิมยังเก็บไว้เป็นสำรอง)
+  others.forEach(o => batch.update(ref('subjects', o.subject_id), { status: 'INACTIVE', merged_into: main.subject_id, updated_at: nowIso() }));
+  await commit(batch.commit());
+  return opts.quiet ? { ok: true, subject_id: main.subject_id } : { ok: true, subject_id: main.subject_id, subjects: await getSubjects(sem, yr) };
+}
+
+// แยกห้องออกจากวิชาเรียนรวม → ได้วิชาใหม่ของห้องนั้น พร้อมย้ายคะแนน/เช็คชื่อ/ส่งงานของนักเรียนห้องนั้นไปด้วย
+export async function splitSubject(subjectId, room) {
+  requireAdmin();
+  const s = await read(ref('subjects', String(subjectId)));
+  if (!s) throw new Error('ไม่พบรายวิชา');
+  const rooms = subjRooms(s), r = str(room);
+  if (rooms.length < 2 || !rooms.includes(r)) throw new Error('วิชานี้ไม่ได้เรียนรวมห้องนี้');
+  const sids = new Set((await rosterStudents(s.semester, s.academic_year, s.level, r)).map(x => x.student_id));
+  // รวมนักเรียนที่ปิดใช้งานแล้วด้วย เพื่อไม่ให้ข้อมูลตกค้าง
+  const ro = await read(ref('rosters', rosterId(s.semester, s.academic_year, s.level, r)));
+  Object.keys((ro && ro.students) || {}).forEach(k => sids.add(k));
+  const [sh, ab, tb] = await Promise.all(['scoreSheets', 'attendanceBook', 'taskBook'].map(c => read(ref(c, s.subject_id))));
+  const pick = (obj, keep) => { const a1 = {}, b1 = {}; Object.entries(obj || {}).forEach(([k, v]) => (keep(k) ? a1 : b1)[k] = v); return [a1, b1]; };
+  const nid = uid(10);
+  const [scMove, scKeep] = pick((sh || {}).scores, k => sids.has(k));
+  const [stMove, stKeep] = pick((sh || {}).statuses, k => sids.has(k));
+  const daysMove = {}, daysKeep = {};
+  Object.entries((ab || {}).days || {}).forEach(([d, m]) => { const [mv, kp] = pick(m, k => sids.has(k)); if (Object.keys(mv).length) daysMove[d] = mv; daysKeep[d] = kp; });
+  const tMove = {}, tKeep = {};
+  Object.entries((tb || {}).tasks || {}).forEach(([t, m]) => { const [mv, kp] = pick(m, k => sids.has(k)); tMove[t] = mv; tKeep[t] = kp; });
+  const left = rooms.filter(x => x !== r);
+  const newSub = Object.assign({}, s, { subject_id: nid, room: r, rooms: [r], room_keys: roomKeys(s.level, [r]), split_from: s.subject_id, updated_at: nowIso() });
+  Object.values(newSub.items || {}).forEach(it => it.subject_id = nid);
+  Object.values(newSub.tasks || {}).forEach(t => t.subject_id = nid);
+  delete newSub.merged_into;
+  const batch = F.writeBatch(db);
+  batch.set(ref('subjects', nid), newSub);
+  batch.update(ref('subjects', s.subject_id), { rooms: left, room: left[0], room_keys: roomKeys(s.level, left), updated_at: nowIso() });
+  batch.set(ref('scoreSheets', nid), { subject_id: nid, scores: scMove, statuses: stMove });
+  batch.set(ref('scoreSheets', s.subject_id), Object.assign({}, sh || {}, { subject_id: s.subject_id, scores: scKeep, statuses: stKeep }));
+  batch.set(ref('attendanceBook', nid), { subject_id: nid, days: daysMove, log: (ab || {}).log || {} });
+  batch.set(ref('attendanceBook', s.subject_id), Object.assign({}, ab || {}, { subject_id: s.subject_id, days: daysKeep }));
+  batch.set(ref('taskBook', nid), { subject_id: nid, tasks: tMove });
+  batch.set(ref('taskBook', s.subject_id), Object.assign({}, tb || {}, { subject_id: s.subject_id, tasks: tKeep }));
+  await commit(batch.commit());
+  return { ok: true, subject_id: nid, subjects: await getSubjects(s.semester, s.academic_year) };
 }
 
 export async function deleteSubject(subjectId, semester, academicYear) {
@@ -983,18 +1125,17 @@ export async function getAttendanceData(subjectId, date) {
   if (!date) throw new Error('กรุณาเลือกวันที่');
   const cleanDate = normalizeDateStr(date);
   const subject = await getSubject(subjectId);
-  const [students, book, hr] = await Promise.all([
-    rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room),
+  const [students, book, morning] = await Promise.all([
+    subjectStudents(subject),
     read(ref('attendanceBook', String(subjectId))),
-    read(ref('homeroomBook', rosterId(subject.semester, subject.academic_year, subject.level, subject.room))).catch(() => null)
+    subjectMorning(subject, cleanDate)
   ]);
   const day = ((book && book.days) || {})[cleanDate] || {};
-  const morning = ((hr && hr.days) || {})[cleanDate] || {};
   const rows = students.map(s => {
     const rec = day[s.student_id];
     const m = morning[s.student_id];
     return {
-      student_id: s.student_id, first_name: s.first_name, last_name: s.last_name,
+      student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, room: s.room,
       status_id: rec ? String(rec.status_id) : '', remark: rec ? String(rec.remark || '') : '',
       homeroom_status: m ? String(m.status_id) : ''
     };
@@ -1021,7 +1162,7 @@ export async function saveAttendance(payload) {
 export async function getAttendanceSummary(subjectId, preSubject, preBook, preStudents) {
   if (!subjectId) throw new Error('กรุณาเลือกวิชา');
   const subject = preSubject || await getSubject(subjectId);
-  const students = preStudents || await rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room);
+  const students = preStudents || await subjectStudents(subject);
   const book = preBook !== undefined ? preBook : await read(ref('attendanceBook', String(subjectId)));
   return summarizeBook(subject, students, (book && book.days) || {}, S.attStatuses, true);
 }
@@ -1146,12 +1287,12 @@ export async function getTaskSubmissionData(subjectId, taskId) {
   const tasks = Object.values(subject.tasks || {}).filter(t => t.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
   const currentTask = taskId ? tasks.find(t => String(t.task_id) === String(taskId)) : tasks[0];
   const [students, book] = await Promise.all([
-    rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room),
+    subjectStudents(subject),
     read(ref('taskBook', String(subjectId)))
   ]);
   const map = currentTask ? (((book && book.tasks) || {})[currentTask.task_id] || {}) : {};
   const rows = students.map(s => ({
-    student_id: s.student_id, first_name: s.first_name, last_name: s.last_name,
+    student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, room: s.room,
     status_id: map[s.student_id] ? String(map[s.student_id].status_id) : '', remark: map[s.student_id] ? str(map[s.student_id].remark) : ''
   }));
   return { subject, tasks, currentTask: currentTask || null, statuses: S.taskStatuses, defaultStatus: (S.taskStatuses[0] || {}).status_id || 'SUBMITTED', rows };
@@ -1171,7 +1312,7 @@ export async function getTaskSummary(subjectId, maxBaseScore, preSubject, preBoo
   if (!subjectId) throw new Error('กรุณาเลือกวิชา');
   const subject = preSubject || await getSubject(subjectId);
   const baseMax = (maxBaseScore != null && num(maxBaseScore) > 0) ? num(maxBaseScore) : 10;
-  const students = preStudents || await rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room);
+  const students = preStudents || await subjectStudents(subject);
   const book = preBook !== undefined ? preBook : await read(ref('taskBook', String(subjectId)));
   const tasks = Object.values(subject.tasks || {}).filter(t => t.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
   const statuses = S.taskStatuses;
@@ -1232,7 +1373,7 @@ export async function getScoreEntryData(subjectId) {
   const needAtt = items.some(i => i.category === CATEGORIES.ATTENDANCE);
   const needTask = items.some(i => i.category === CATEGORIES.TASKS);
   const [students, sheet, attBook, taskBook] = await Promise.all([
-    rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room),
+    subjectStudents(subject),
     read(ref('scoreSheets', String(subjectId))),
     needAtt ? read(ref('attendanceBook', String(subjectId))) : null,
     needTask ? read(ref('taskBook', String(subjectId))) : null
@@ -1264,7 +1405,7 @@ export async function getScoreEntryData(subjectId) {
     const statusInfo = statusMap[s.student_id];
     const result = calculateStudentResult(items, itemScores, config, statusInfo);
     return {
-      student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, scores: itemScores,
+      student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, room: s.room, scores: itemScores,
       total: result.total, grade: result.grade, point: result.point, status: result.status,
       remark: statusInfo ? statusInfo.remark || '' : '', breakdown: result.breakdown
     };

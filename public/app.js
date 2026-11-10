@@ -19,6 +19,9 @@ let taskSummaryBaseScore = 10;
 let usersCache = [];
 
 let viewMode = 'mine';
+function subjRoomsUI(s){ return (Array.isArray(s.rooms) && s.rooms.length ? s.rooms : [s.room]).map(String); }
+function subjRoomLabel(s){ return `${s.level||'-'}/${subjRoomsUI(s).join('+')}`; }
+function isCombined(s){ return subjRoomsUI(s).length > 1; }
 function isAdminRole(){ return !!(state.me && state.me.role === 'admin'); }
 function isAdminUI(){ return isAdminRole() && viewMode === 'admin'; }
 function myHomerooms(){ return (state.me && state.me.homerooms) || []; }
@@ -37,8 +40,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
 /* ===================== เข้าสู่ระบบ ===================== */
 function bootAuth(){
+  // กันค้าง: ถ้าตรวจสอบนานเกิน 12 วินาที ให้แสดงปุ่มเข้าสู่ระบบ
+  setTimeout(() => document.body.classList.remove('auth-pending'), 12000);
   API.onAuth(async user => {
-    if (!user) return showLogin();
+    if (!user) { try { localStorage.removeItem('classhub_last_email'); } catch (e) {} return showLogin(); }
+    try { localStorage.setItem('classhub_last_email', user.email || ''); } catch (e) {}
     showLoading(true);
     try {
       const r = await API.resolveUser(user);
@@ -58,13 +64,14 @@ function bootAuth(){
   });
 }
 function showLogin(msg, signedIn){
+  document.body.classList.remove('auth-pending');
   document.body.classList.add('logged-out');
   const box = document.getElementById('loginMsg');
   if (box) box.innerHTML = msg || '';
   const out = document.getElementById('loginSwitch');
   if (out) out.style.display = signedIn ? 'inline-flex' : 'none';
 }
-function hideLogin(){ document.body.classList.remove('logged-out'); }
+function hideLogin(){ document.body.classList.remove('logged-out', 'auth-pending'); }
 async function doLogin(){
   try { await API.login(); } catch (e) {
     if (e && e.code === 'auth/popup-closed-by-user') return;
@@ -486,7 +493,7 @@ function fillSubjectSelects(){
     el.innerHTML='<option value="">-- เลือกรายวิชา --</option>'+active.map(s=> {
       const code = esc(s.subject_code||'-');
       const name = esc(s.subject_name);
-      const levelRoom = `${esc(s.level||'-')}/${esc(s.room||'-')}`;
+      const levelRoom = esc(subjRoomLabel(s)) + (isCombined(s) ? ' (เรียนรวม)' : '');
       return `<option value="${esc(s.subject_id)}">${code}, ${name}, ${levelRoom}</option>`;
     }).join('');
     if(active.some(s=>s.subject_id===old)) el.value=old;
@@ -654,19 +661,28 @@ function renderAttendanceList(){
     box.innerHTML = '<div class="empty">ยังไม่มีสถานะการเช็คชื่อ</div>';
     return;
   }
-  box.innerHTML = attendanceData.rows.map(r => {
+  const rooms = attendanceData.subject && !attendanceData.homeroom ? subjRoomsUI(attendanceData.subject) : [];
+  if (rooms.length < 2 || (attRoom !== 'ALL' && !rooms.includes(attRoom))) attRoom = 'ALL';
+  const bar = rooms.length > 1 ? `<div class="att-roombar"><span>เรียนรวม:</span>${['ALL', ...rooms].map(r => {
+      const n = r === 'ALL' ? attendanceData.rows.length : attendanceData.rows.filter(x => String(x.room) === r).length;
+      return `<button class="stu-room${attRoom === r ? ' on' : ''}" onclick="attRoom='${esc(r)}';renderAttendanceList()">${r === 'ALL' ? 'ทุกห้อง' : esc(attendanceData.subject.level) + '/' + esc(r)}<small>${n}</small></button>`; }).join('')}</div>` : '';
+  box.innerHTML = bar + attVisibleRows().map(r => {
     const rStatus = String(r.status_id || '');
     const btns = statuses.map(s => {
       const active = rStatus !== '' && rStatus === String(s.status_id);
       return `<button type="button" class="att-btn${active?' active':''}" data-student="${esc(r.student_id)}" data-status="${esc(s.status_id)}" style="--att-color:${esc(s.color||'#7F2BE3')}" title="${esc(s.label)}"><span class="lbl-full">${esc(s.label)}</span><span class="lbl-short">${esc(shortStatusLabel(s))}</span></button>`;
     }).join('');
     return `<div class="attendance-row" data-student="${esc(r.student_id)}">
-      <div class="attendance-name"><b>${esc(r.first_name)} ${esc(r.last_name)}</b><small>${esc(r.student_id)}</small><span class="hr-slot">${homeroomBadge(r)}</span></div>
+      <div class="attendance-name"><b>${esc(r.first_name)} ${esc(r.last_name)}</b><small>${esc(r.student_id)}${roomTag(attendanceData.subject, r)}</small><span class="hr-slot">${homeroomBadge(r)}</span></div>
       <div class="attendance-btns">${btns}</div>
     </div>`;
   }).join('');
   box.querySelectorAll('.att-btn').forEach(btn => btn.addEventListener('click', () => selectAttendanceStatus(btn)));
 }
+
+let attRoom = 'ALL';
+function attVisibleRows(){ return (attendanceData.rows || []).filter(r => attRoom === 'ALL' || String(r.room) === attRoom); }
+function roomTag(subject, r){ return subject && subjRoomsUI(subject).length > 1 && r.room ? ` <span class="room-tag">${esc(subject.level)}/${esc(r.room)}</span>` : ''; }
 
 function shortStatusLabel(s){
   const map = {PRESENT:'มา',ABSENT:'ขาด',LEAVE:'ลา',LATE:'สาย',ACTIVITY:'กิจกรรม'};
@@ -686,10 +702,11 @@ function selectAttendanceStatus(btn){
 
 function markAllPresent(){
   if(!attendanceData || !attendanceData.rows || !attendanceData.rows.length) return toast('ไม่มีรายชื่อนักเรียนให้เช็คชื่อ','error');
-  if(!confirm('ต้องการกำหนดนักเรียนทั้งหมดเป็น "มา" หรือไม่?')) return;
+  const scope = attRoom === 'ALL' ? 'นักเรียนทั้งหมด' : `นักเรียนห้อง ${attendanceData.subject.level}/${attRoom}`;
+  if(!confirm(`ต้องการกำหนด${scope}เป็น "มา" หรือไม่?`)) return;
   const present = attendanceData.statuses.find(s => s.status_id === 'PRESENT') || attendanceData.statuses[0] || {};
   if(!present.status_id) return toast('ไม่พบสถานะ "มา"','error');
-  attendanceData.rows.forEach(r => r.status_id = String(present.status_id));
+  attVisibleRows().forEach(r => r.status_id = String(present.status_id));
   saveAttendanceDraft();
   renderAttendanceList();
   toast('กำหนดนักเรียนทั้งหมดเป็น มา แล้ว (กด "บันทึกการเช็คชื่อ" เพื่อยืนยัน)');
@@ -873,7 +890,7 @@ function openPlannedTeachersModal(){
   document.getElementById('modalBody').innerHTML = list.length ? `
     <div class="info-box">กรอกอีเมล Google ของครูแต่ละคน (เว้นว่างได้ถ้ายังไม่ทราบ) เมื่อบันทึก ระบบจะเพิ่มครูเข้าระบบและผูกวิชาตามตารางสอนให้อัตโนมัติ</div>
     <div class="pt-list">${list.map(([name, subs], i) => `<div class="pt-row">
-      <div><b>${esc(name)}</b><small>${subs.length} วิชา: ${esc(subs.slice(0, 4).map(s => `${s.subject_name} ${s.level}/${s.room}`).join(', '))}${subs.length > 4 ? ' …' : ''}</small></div>
+      <div><b>${esc(name)}</b><small>${subs.length} วิชา: ${esc(subs.slice(0, 4).map(s => `${s.subject_name} ${subjRoomLabel(s)}`).join(', '))}${subs.length > 4 ? ' …' : ''}</small></div>
       <input id="pt_${i}" type="email" placeholder="name@ppj.ac.th" data-name="${esc(name)}"></div>`).join('')}</div>
     <div class="modal-actions"><button class="secondary" onclick="closeModal()">ยกเลิก</button><button class="primary" onclick="savePlannedTeachers()">บันทึก</button></div>`
     : `<div class="empty">ครูทุกคนในตารางสอนของภาคเรียนนี้มีอีเมลในระบบแล้ว</div><div class="modal-actions"><button class="primary" onclick="closeModal()">ปิด</button></div>`;
@@ -904,7 +921,7 @@ function renderUnassigned(){
       <div class="mw-tools">${plannedTeacherNames().length ? `<button class="primary" onclick="openPlannedTeachersModal()">👥 เพิ่มครูจากตารางสอน (${plannedTeacherNames().length})</button>` : ''}
       ${free.length ? `<button class="secondary" onclick="this.closest('.panel').classList.toggle('open')">แสดง / ซ่อน</button>` : ''}</div></div>
     ${free.length ? `<div class="unassigned-list">${free.map(s => `<div class="ua-row">
-      <span><b>${esc(s.level)}/${esc(s.room)}</b> ${esc(s.subject_code||'')} ${esc(s.subject_name)}${s.planned_teacher ? ` <small style="color:var(--ink-soft)">• ตามตาราง: ${esc(s.planned_teacher)}</small>` : ''}</span>
+      <span><b>${esc(subjRoomLabel(s))}</b> ${esc(s.subject_code||'')} ${esc(s.subject_name)}${s.planned_teacher ? ` <small style="color:var(--ink-soft)">• ตามตาราง: ${esc(s.planned_teacher)}</small>` : ''}</span>
       <select onchange="quickAssign('${esc(s.subject_id)}', this.value)"><option value="">— เลือกครู —</option>${teachers.map(u => `<option value="${esc(u.email)}">${esc(u.name || u.email)}</option>`).join('')}</select>
     </div>`).join('')}</div>` : ''}
   </div>`;
@@ -963,12 +980,12 @@ function renderAssign(){
     if (asg.readonly && !mine) return false;
     if (f === 'mine' && !mine) return false;
     if (f === 'free' && s.teachers.length) return false;
-    return !q || `${s.subject_code} ${s.subject_name} ${s.level}/${s.room}`.toLowerCase().includes(q);
+    return !q || `${s.subject_code} ${s.subject_name} ${subjRoomLabel(s)}`.toLowerCase().includes(q);
   });
   const mineCount = asg.catalog.filter(s => s.teachers.includes(asg.email)).length;
   if (!asg.catalog.length || (asg.readonly && !mineCount)) { subBox.innerHTML = `<div class="empty">${asg.readonly ? 'ยังไม่มีวิชาที่สอนในภาคเรียนนี้ — ผู้ดูแลระบบเป็นผู้กำหนดวิชาให้' : 'ยังไม่มีรายวิชาในภาคเรียนนี้ — นำเข้าได้ที่เมนู "นำเข้า / ส่งออกข้อมูล"'}</div>`; return; }
   const groups = {};
-  list.forEach(s => (groups[`${s.level}/${s.room}`] = groups[`${s.level}/${s.room}`] || []).push(s));
+  list.forEach(s => (groups[subjRoomLabel(s)] = groups[subjRoomLabel(s)] || []).push(s));
   subBox.innerHTML = `<p class="mw-count">${asg.self ? 'คุณ' : esc(asg.name || asg.email)} สอนอยู่ <b>${mineCount}</b> วิชา</p>` + (Object.keys(groups).length ? Object.keys(groups).map(k => `
     <div class="mw-group"><div class="mw-group-h">ชั้น ${esc(k)}</div>
     ${groups[k].map(s => {
@@ -984,7 +1001,7 @@ function renderAssign(){
 async function toggleSubjectAssign(id){
   const s = asg.catalog.find(x => x.subject_id === id); if (!s) return;
   const on = !s.teachers.includes(asg.email);
-  if (!on && !confirm(`เลิกสอน ${s.subject_code || ''} ${s.subject_name} ${s.level}/${s.room}?\nคะแนนและการเช็คชื่อที่บันทึกไว้ยังอยู่ครบ`)) return;
+  if (!on && !confirm(`เลิกสอน ${s.subject_code || ''} ${s.subject_name} ${subjRoomLabel(s)}?\nคะแนนและการเช็คชื่อที่บันทึกไว้ยังอยู่ครบ`)) return;
   try { asg.catalog = await gas('assignSubject', id, asg.email, on, asg.name); } catch (e) { return; }
   renderAssign();
   await afterAssignChange();
@@ -1196,7 +1213,7 @@ function renderTaskList(){
       return `<button type="button" class="att-btn${active?' active':''}" data-student="${esc(r.student_id)}" data-status="${esc(s.status_id)}" style="--att-color:${esc(s.color||'#0EA968')}">${esc(s.label)}</button>`;
     }).join('');
     return `<div class="attendance-row" data-student="${esc(r.student_id)}">
-      <div class="attendance-name"><b>${esc(r.first_name)} ${esc(r.last_name)}</b><small>${esc(r.student_id)}</small></div>
+      <div class="attendance-name"><b>${esc(r.first_name)} ${esc(r.last_name)}</b><small>${esc(r.student_id)}${roomTag(taskData && taskData.subject, r)}</small></div>
       <div class="attendance-btns">${btns}</div>
     </div>`;
   }).join('');
@@ -1528,7 +1545,7 @@ function renderScoreTable(){
         <option value="W" ${r.status==='W'?'selected':''}>มส</option>
         <option value="ZERO" ${r.status==='ZERO'?'selected':''}>0 (ทุจริต)</option>
       </select>`;
-      return `<tr data-row="${ri}" data-student="${esc(r.student_id)}"><td>${esc(r.student_id)}</td><td>${esc(r.first_name)} ${esc(r.last_name)}</td>${cells}<td class="row-total">${special?'-':Number(r.total).toFixed(2).replace('.00','')}</td><td class="row-grade">${gradeDisplay}</td><td>${statusSelect}</td></tr>`;
+      return `<tr data-row="${ri}" data-student="${esc(r.student_id)}"><td>${esc(r.student_id)}</td><td>${esc(r.first_name)} ${esc(r.last_name)}${roomTag(scoreData.subject, r)}</td>${cells}<td class="row-total">${special?'-':Number(r.total).toFixed(2).replace('.00','')}</td><td class="row-grade">${gradeDisplay}</td><td>${statusSelect}</td></tr>`;
     }).join('') + '</tbody>';
 
   t.querySelectorAll('.score-input:not([disabled])').forEach(inp=>inp.addEventListener('input',()=>updateRowTotal(inp.closest('tr'))));
@@ -1714,18 +1731,42 @@ function renderDashboardStats(){
   document.getElementById('scoreCount').textContent=state.summary.scoreCount||0;
 }
 
+let stuRoom = null;   // 'ม.4|1' หรือ 'ALL'
+function roomKeyOf(s){ return `${s.class_level}|${s.room}`; }
+function roomSort(a, b){ return a.replace('|', '/').localeCompare(b.replace('|', '/'), 'th', { numeric: true }); }
+function setStuRoom(k){ stuRoom = k; try { localStorage.setItem('classhub_stu_room', k); } catch (e) {} renderStudents(); }
 function renderStudents(){
   const active = state.students.filter(s => s.status !== 'INACTIVE');
   const table = document.getElementById('studentsTable');
   if (!table) return;
+  const roomsBox = document.getElementById('stuRooms'), info = document.getElementById('stuInfo');
+  const counts = {};
+  active.forEach(s => { counts[roomKeyOf(s)] = (counts[roomKeyOf(s)] || 0) + 1; });
+  const keys = Object.keys(counts).sort(roomSort);
+  if (stuRoom === null) { try { stuRoom = localStorage.getItem('classhub_stu_room'); } catch (e) {} }
+  if (!stuRoom || (stuRoom !== 'ALL' && !counts[stuRoom])) stuRoom = keys[0] || null;
+  if (stuRoom === 'ALL' && keys.length < 2) stuRoom = keys[0] || null;
+  if (roomsBox) roomsBox.innerHTML = keys.map(k => `<button class="stu-room${stuRoom === k ? ' on' : ''}" onclick="setStuRoom('${esc(k)}')">${esc(k.replace('|', '/'))}<small>${counts[k]}</small></button>`).join('')
+    + (keys.length > 1 ? `<button class="stu-room${stuRoom === 'ALL' ? ' on' : ''}" onclick="setStuRoom('ALL')">ทั้งหมด<small>${active.length}</small></button>` : '');
 
+  const head = '<thead><tr><th>ที่</th><th>รหัส</th><th>คำนำหน้า</th><th>ชื่อ–สกุล</th><th>ชั้น/ห้อง</th><th></th></tr></thead>';
   if (active.length === 0) {
-    table.innerHTML = '<thead><tr><th>รหัส</th><th>คำนำหน้า</th><th>ชื่อ–สกุล</th><th>ชั้น</th><th>ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th></th></tr></thead><tbody><tr><td colspan="8" class="empty">ยังไม่มีข้อมูลนักเรียนในภาคเรียนนี้</td></tr></tbody>';
+    if (info) info.textContent = '';
+    table.innerHTML = head + '<tbody><tr><td colspan="6" class="empty">ยังไม่มีข้อมูลนักเรียนในภาคเรียนนี้</td></tr></tbody>';
     return;
   }
-
-  table.innerHTML='<thead><tr><th>รหัส</th><th>คำนำหน้า</th><th>ชื่อ–สกุล</th><th>ชั้น</th><th>ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th></th></tr></thead><tbody>'+
-    active.map(s=>`<tr><td>${esc(s.student_id)}</td><td>${esc(s.prefix||'')}</td><td>${esc(s.first_name)} ${esc(s.last_name)}</td><td>${esc(s.class_level)}</td><td>${esc(s.room)}</td><td>${esc(s.semester||state.currentSemester)}</td><td>${esc(s.academic_year||state.currentYear)}</td><td>${isAdminUI()?`<button class="small-btn" onclick='openStudentModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeStudent('${esc(s.student_id)}')">ลบ</button>`:''}</td></tr>`).join('')+'</tbody>';
+  const q = (document.getElementById('stuSearch')?.value || '').trim().toLowerCase();
+  let list = q ? active : active.filter(s => !stuRoom || stuRoom === 'ALL' || roomKeyOf(s) === stuRoom);
+  if (q) list = list.filter(s => `${s.student_id} ${s.prefix || ''}${s.first_name} ${s.last_name}`.toLowerCase().includes(q));
+  list = list.slice().sort((a, b) => roomSort(roomKeyOf(a), roomKeyOf(b)) || String(a.student_id).localeCompare(String(b.student_id), 'th', { numeric: true }));
+  if (info) info.innerHTML = q ? `ผลการค้นหา "${esc(q)}" ทุกห้อง: <b>${list.length}</b> คน`
+    : `${!stuRoom || stuRoom === 'ALL' ? 'ทุกห้อง' : 'ชั้น ' + esc(stuRoom.replace('|', '/'))} • <b>${list.length}</b> คน • ภาคเรียน ${esc(state.currentSemester)}/${esc(state.currentYear)}`;
+  let lastRoom = null;
+  table.innerHTML = head + '<tbody>' + (list.length ? list.map((s, i) => {
+    let sep = '';
+    if ((stuRoom === 'ALL' || q) && roomKeyOf(s) !== lastRoom) { lastRoom = roomKeyOf(s); sep = `<tr class="stu-sep"><td colspan="6">ชั้น ${esc(lastRoom.replace('|', '/'))}</td></tr>`; }
+    return sep + `<tr><td>${i + 1}</td><td>${esc(s.student_id)}</td><td>${esc(s.prefix||'')}</td><td>${esc(s.first_name)} ${esc(s.last_name)}</td><td>${esc(s.class_level)}/${esc(s.room)}</td><td>${isAdminUI()?`<button class="small-btn" onclick='openStudentModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeStudent('${esc(s.student_id)}')">ลบ</button>`:''}</td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">ไม่พบนักเรียน</td></tr>') + '</tbody>';
 }
 
 function renderSubjects(){
@@ -1737,7 +1778,7 @@ function renderSubjects(){
 
   if(!active.length){document.getElementById('subjectsTable').innerHTML='<tbody><tr><td class="empty">ยังไม่มีรายวิชาในภาคเรียนนี้ — กด "+ เพิ่มวิชา"</td></tr></tbody>';return;}
   document.getElementById('subjectsTable').innerHTML='<thead><tr><th>รหัสวิชา</th><th>ชื่อวิชา</th><th>ชั้น/ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th>คะแนนเต็ม</th><th>ครูผู้สอน</th><th></th></tr></thead><tbody>'+
-    active.map(s=>`<tr><td>${esc(s.subject_code||s.subject_id)}</td><td>${esc(s.subject_name)}</td><td>${esc(s.level)}/${esc(s.room)}</td><td>${esc(s.semester)}</td><td>${esc(s.academic_year)}</td><td>${s.max_score}</td><td style="white-space:normal;max-width:260px;font-size:12px">${(s.teachers||[]).length ? s.teachers.map(e=>esc(teacherName(e))).join(', ') : (s.planned_teacher ? `<span style="color:var(--ink-soft)">${esc(s.planned_teacher)}</span> <span class="ii-note" style="display:inline">ยังไม่มีอีเมล</span>` : '<span style="color:var(--ink-faint)">-</span>')}</td><td><button class="small-btn" onclick='openSubjectModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeSubject('${esc(s.subject_id)}')">ลบ</button></td></tr>`).join('')+'</tbody>';
+    active.map(s=>`<tr><td>${esc(s.subject_code||s.subject_id)}</td><td>${esc(s.subject_name)}</td><td>${esc(subjRoomLabel(s))}${isCombined(s) ? ' <span class="comb-chip">เรียนรวม</span>' : ''}</td><td>${esc(s.semester)}</td><td>${esc(s.academic_year)}</td><td>${s.max_score}</td><td style="white-space:normal;max-width:260px;font-size:12px">${(s.teachers||[]).length ? s.teachers.map(e=>esc(teacherName(e))).join(', ') : (s.planned_teacher ? `<span style="color:var(--ink-soft)">${esc(s.planned_teacher)}</span> <span class="ii-note" style="display:inline">ยังไม่มีอีเมล</span>` : '<span style="color:var(--ink-faint)">-</span>')}</td><td><button class="small-btn" onclick='openSubjectModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeSubject('${esc(s.subject_id)}')">ลบ</button></td></tr>`).join('')+'</tbody>';
 }
 
 async function renderItems(){
@@ -1865,7 +1906,8 @@ async function openSubjectImportModal(){
     </div>
     <div id="ttPreview"></div>
     <div class="import-opts">
-      <label><input type="checkbox" id="tt_update" checked> วิชาที่มีอยู่แล้ว: อัปเดตหน่วยกิตและครูผู้สอน (ถ้าจับคู่ครูได้)</label>
+      <label><input type="checkbox" id="tt_combine" checked onchange="buildTimetableRows()"> วิชาที่ไฟล์ระบุว่า "เรียนรวม" → รวมเป็นวิชาเดียวหลายห้อง (เช็คชื่อ/กรอกคะแนนพร้อมกัน)</label>
+      <label><input type="checkbox" id="tt_update" checked> วิชาที่มีอยู่แล้ว: อัปเดตหน่วยกิตและครูผู้สอน และรวมห้องให้ถ้าไฟล์ระบุว่าเรียนรวม</label>
     </div>
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">ยกเลิก</button>
@@ -1916,18 +1958,26 @@ function buildTimetableRows(){
   const byName = {};
   usersCache.filter(u => u.active !== false).forEach(u => { const k = normName(u.name); if (k) byName[k] = u.email; });
   const existing = new Set((ttExistingFor === v('ttTarget') ? ttExistingList : []).filter(s => s.status !== 'INACTIVE')
-    .map(s => [s.subject_code, s.subject_name, s.level, s.room].map(x => String(x || '').trim()).join('|')));
+    .flatMap(s => subjRoomsUI(s).map(r => [s.subject_code, s.subject_name, s.level, r].map(x => String(x || '').trim()).join('|'))));
+  const combineOn = document.getElementById('tt_combine') ? document.getElementById('tt_combine').checked : true;
   ttRows = [];
   tt.subjects.filter(s => s.termId === termId).sort((a, b) => (a.level - b.level) || ((a.order || 0) - (b.order || 0))).forEach(s => {
     const level = /^\d+$/.test(String(s.level)) ? `ม.${s.level}` : String(s.level);
     let rooms = [1, 2, 3].filter(r => s['room' + r]);
     if (!rooms.length) rooms = Array.from({ length: Number(s.rooms) || 1 }, (_, i) => i + 1);
-    rooms.forEach(r => {
-      const t = teachers[s['room' + r]];
-      const email = t ? byName[normName(`${t.firstName || ''}${t.lastName || ''}`)] : '';
-      const row = { level, room: String(r), code: String(s.code || '').trim(), name: String(s.name || '').trim(), credit: Number(s.unit) || 0,
-        teacherName: t ? `${t.prefix || ''}${t.firstName || ''} ${t.lastName || ''}`.trim() : '', email: email || '', note: s.combine ? `เรียนรวมห้อง ${s.combine}` : (s.note === 'วิทย์' ? 'สายวิทย์' : s.note === 'ศิลป์' ? 'สายศิลป์' : (s.note || '')) };
-      row.exists = existing.has([row.code, row.name, row.level, row.room].join('|'));
+    // เรียนรวม (เช่น combine = "1,2") → เป็นวิชาเดียวหลายห้อง
+    const comb = String(s.combine || '').split(/[^0-9]+/).filter(Boolean).map(Number).filter(r => rooms.includes(r));
+    const sets = (combineOn && comb.length > 1) ? [comb, ...rooms.filter(r => !comb.includes(r)).map(r => [r])] : rooms.map(r => [r]);
+    sets.forEach(rs => {
+      const ts = [...new Set(rs.map(r => s['room' + r]).filter(Boolean))].map(id => teachers[id]).filter(Boolean);
+      const names = ts.map(t => `${t.prefix || ''}${t.firstName || ''} ${t.lastName || ''}`.trim());
+      const emailsAll = ts.map(t => byName[normName(`${t.firstName || ''}${t.lastName || ''}`)] || '');
+      const emails = emailsAll.filter(Boolean);
+      const row = { level, room: String(rs[0]), rooms: rs.map(String), code: String(s.code || '').trim(), name: String(s.name || '').trim(), credit: Number(s.unit) || 0,
+        teacherNames: names, teacherName: names.join(', '), emailsAll, emails, email: emails[0] || '',
+        note: rs.length > 1 ? 'เรียนรวม' : (s.combine ? `เรียนรวมห้อง ${s.combine} (แยกวิชา)` : (s.note === 'วิทย์' ? 'สายวิทย์' : s.note === 'ศิลป์' ? 'สายศิลป์' : (s.note || ''))) };
+      row.label = `${level}/${row.rooms.join('+')}`;
+      row.exists = row.rooms.some(r => existing.has([row.code, row.name, row.level, r].join('|')));
       row.selected = true;
       ttRows.push(row);
     });
@@ -1945,12 +1995,12 @@ function renderTimetablePreview(){
   const box = document.getElementById('ttPreview');
   if (!ttRows.length) { box.innerHTML = '<div class="empty">ไม่พบรายวิชาในภาคเรียนนี้</div>'; document.getElementById('ttGoBtn').disabled = true; return; }
   const groups = {};
-  ttRows.forEach((r, i) => { (groups[`${r.level}/${r.room}`] = groups[`${r.level}/${r.room}`] || []).push(i); });
+  ttRows.forEach((r, i) => { (groups[r.label] = groups[r.label] || []).push(i); });
   const keys = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'th', { numeric: true }));
   const sel = ttRows.filter(r => r.selected);
   const nNew = sel.filter(r => !r.exists).length, nOld = sel.length - nNew;
   const noT = sel.filter(r => !r.email).length;
-  const unmatched = [...new Set(ttRows.filter(r => r.teacherName && !r.email).map(r => r.teacherName))];
+  const unmatched = [...new Set(ttRows.flatMap(r => r.teacherNames.filter((n, i) => !r.emailsAll[i])))];
   box.innerHTML = `
     <div class="import-head"><b>พบ ${ttRows.length} รายวิชา-ห้อง ใน ${keys.length} ห้อง</b>
       <span><button class="small-btn" onclick="selectTimetable(null,true)">เลือกทั้งหมด</button>
@@ -1967,7 +2017,7 @@ function renderTimetablePreview(){
           <label class="tt-sub">
             <input type="checkbox" ${r.selected ? 'checked' : ''} onchange="ttRows[${i}].selected=this.checked;renderTimetablePreview()">
             <span class="ii-main">${esc(r.code)} ${esc(r.name)} <small>${r.credit} นก.${r.note ? ' • ' + esc(r.note) : ''}</small>
-              <small class="${r.email ? 'tt-ok' : 'ii-note'}">${r.email ? '👤 ' + esc(teacherName(r.email)) : (r.teacherName ? '👤 ' + esc(r.teacherName) + ' <span class="ii-note" style="display:inline">(ยังไม่มีอีเมล)</span>' : '⚠️ ไม่ระบุครู')}</small></span>
+              <small>${r.teacherNames.length ? r.teacherNames.map((n, j) => r.emailsAll[j] ? `<span class="tt-ok">👤 ${esc(teacherName(r.emailsAll[j]))}</span>` : `👤 ${esc(n)} <span class="ii-note" style="display:inline">(ยังไม่มีอีเมล)</span>`).join(' • ') : '<span class="ii-note" style="display:inline">⚠️ ไม่ระบุครู</span>'}</small></span>
             ${r.exists ? '<span class="tt-tag">มีแล้ว</span>' : ''}
           </label>`; }).join('')}
       </details>`; }).join('')}</div>
@@ -1982,7 +2032,7 @@ function renderTimetablePreview(){
   }));
 }
 function selectTimetable(key, on){
-  ttRows.forEach(r => { if (!key || `${r.level}/${r.room}` === key) r.selected = on; });
+  ttRows.forEach(r => { if (!key || r.label === key) r.selected = on; });
   renderTimetablePreview();
 }
 
@@ -1994,7 +2044,7 @@ async function processSubjectImport(){
   if (!confirm(`ยืนยันนำเข้ารายวิชา ${rows.length} รายการ (ใหม่ ${nNew}) เข้าภาคเรียน ${v('ttTarget')}?`)) return;
   try {
     const tg = ttTargetTerm();
-    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, credit: r.credit, planned_teacher: r.teacherName, teachers: r.email ? [r.email] : [], teacher_names: r.email ? { [r.email]: teacherName(r.email) } : {} })),
+    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, rooms: r.rooms, credit: r.credit, planned_teachers: r.teacherNames, teachers: r.emails, teacher_names: Object.fromEntries(r.emails.map(e => [e, teacherName(e)])) })),
       { semester: tg.sem, academicYear: tg.yr, update });
     state.registeredTerms = res.registeredTerms || state.registeredTerms;
     closeModal();
@@ -2005,8 +2055,49 @@ async function processSubjectImport(){
       state.subjects = res.subjects;
       fillTermSelects(); fillSubjectSelects(); renderSubjects(); renderDashboardStats();
     }
-    toast(`สร้างวิชาใหม่ ${res.created} วิชา` + (res.updated ? ` • อัปเดต ${res.updated} วิชา` : '') + (res.skipped ? ` • ข้าม ${res.skipped} วิชา` : ''));
+    toast(`สร้างวิชาใหม่ ${res.created} วิชา` + (res.updated ? ` • อัปเดต ${res.updated} วิชา` : '') + (res.merged ? ` • รวมห้อง ${res.merged} วิชา` : '') + (res.skipped ? ` • ข้าม ${res.skipped} วิชา` : ''));
   } catch (e) {}
+}
+
+/* ===================== รวม / แยกห้อง (วิชาเรียนรวม) ===================== */
+function openCombineModal(){
+  if (!isAdminUI()) return;
+  const act = state.subjects.filter(s => s.status !== 'INACTIVE' && String(s.semester) === String(state.currentSemester) && String(s.academic_year) === String(state.currentYear));
+  const groups = {};
+  act.forEach(s => { const k = [s.subject_code, s.subject_name, s.level].join('|'); (groups[k] = groups[k] || []).push(s); });
+  const cand = Object.values(groups).filter(g => g.length > 1);
+  const combined = act.filter(isCombined);
+  const tn = s => (s.teachers || []).map(teacherName).join(', ') || (s.planned_teacher ? s.planned_teacher + ' (ตามตาราง)' : '-');
+  document.getElementById('modalTitle').textContent = 'รวม / แยกห้อง (วิชาเรียนรวม)';
+  document.getElementById('modalBody').innerHTML = `
+    <div class="info-box">รวมวิชารหัสเดียวกันของหลายห้องเป็นวิชาเดียว — เช็คชื่อและกรอกคะแนนนักเรียนทุกห้องในหน้าเดียว
+      ข้อมูลเดิม (คะแนน เช็คชื่อ ส่งงาน) ของทุกห้องจะย้ายมารวมกัน องค์ประกอบคะแนนชื่อเดียวกันจะรวมเป็นช่องเดียว</div>
+    <h4 class="am-h">วิชาที่รวมได้ (${cand.length})</h4>
+    <div class="am-list">${cand.length ? cand.map(g => `<div class="ua-row">
+      <span><b>${esc(g[0].subject_code || '')} ${esc(g[0].subject_name)}</b> <small style="color:var(--ink-soft)">${g.map(s => `${esc(subjRoomLabel(s))} — ${esc(tn(s))}`).join(' • ')}</small></span>
+      <button class="primary small-btn" onclick='doMerge(${JSON.stringify(g.map(s => s.subject_id))})'>🔗 รวม ${esc(g[0].level)}/${[...new Set(g.flatMap(subjRoomsUI))].sort().join('+')}</button></div>`).join('')
+      : '<div class="empty">ไม่มีวิชารหัสเดียวกันที่แยกห้องอยู่</div>'}</div>
+    <h4 class="am-h" style="margin-top:14px">วิชาที่เรียนรวมอยู่ (${combined.length})</h4>
+    <div class="am-list">${combined.length ? combined.map(s => `<div class="ua-row">
+      <span><b>${esc(s.subject_code || '')} ${esc(s.subject_name)}</b> <small style="color:var(--ink-soft)">${esc(subjRoomLabel(s))} — ${esc(tn(s))}</small></span>
+      <span>${subjRoomsUI(s).map(r => `<button class="secondary small-btn" onclick="doSplit('${esc(s.subject_id)}','${esc(r)}')">แยก ${esc(s.level)}/${esc(r)} ออก</button>`).join(' ')}</span></div>`).join('')
+      : '<div class="empty">ยังไม่มีวิชาเรียนรวม</div>'}</div>
+    <div class="modal-actions"><button class="primary" onclick="closeModal()">ปิด</button></div>`;
+  openModal();
+}
+async function doMerge(ids){
+  const subs = ids.map(id => state.subjects.find(s => s.subject_id === id)).filter(Boolean);
+  if (!confirm(`รวม ${subs[0].subject_name} ห้อง ${subs.map(subjRoomLabel).join(', ')} เป็นวิชาเดียว?\nคะแนน เช็คชื่อ และส่งงานเดิมของทุกห้องจะย้ายมารวมกัน`)) return;
+  const res = await gas('mergeSubjects', ids);
+  state.subjects = res.subjects; fillSubjectSelects(); renderSubjects(); syncSubject(res.subject_id);
+  toast('รวมห้องเรียบร้อย'); openCombineModal();
+}
+async function doSplit(id, room){
+  const s = state.subjects.find(x => x.subject_id === id);
+  if (!confirm(`แยกห้อง ${s.level}/${room} ออกจาก ${s.subject_name}?\nคะแนน เช็คชื่อ และส่งงานของนักเรียนห้องนี้จะย้ายไปอยู่วิชาใหม่ของห้อง ${s.level}/${room}`)) return;
+  const res = await gas('splitSubject', id, room);
+  state.subjects = res.subjects; fillSubjectSelects(); renderSubjects();
+  toast(`แยกห้อง ${s.level}/${room} แล้ว`); openCombineModal();
 }
 
 async function removeSubject(id){
@@ -2115,7 +2206,7 @@ function openCopyItemsModal() {
     if(String(s.subject_id) !== String(subjectId)) {
       const code = esc(s.subject_code || '-');
       const name = esc(s.subject_name);
-      const levelRoom = `${esc(s.level || '-')}/${esc(s.room || '-')}`;
+      const levelRoom = esc(subjRoomLabel(s));
       const term = `${esc(s.semester || state.currentSemester)}/${esc(s.academic_year || state.currentYear)}`;
       options += `<option value="${esc(s.subject_id)}">${code} ${name} (${levelRoom}) [เทอม ${term}]</option>`;
     }

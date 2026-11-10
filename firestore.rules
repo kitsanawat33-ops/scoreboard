@@ -6,7 +6,8 @@ rules_version = '2';
 //
 //  - ผู้ดูแลระบบ (admin)  : ทำได้ทุกอย่าง
 //  - ครู (teacher)        : เห็น/แก้เฉพาะรายวิชาที่มีชื่อตนใน teachers
-//  - ครูประจำชั้น          : เช็คชื่อประจำชั้นได้เฉพาะห้องใน homerooms ของตน
+//  - ครูประจำชั้น          : เช็คชื่อประจำชั้นห้องของตน + ดูคะแนนทุกวิชาของห้อง (แก้ไม่ได้)
+//  - ครูเลือกรับสอนวิชา / เลือกห้องประจำชั้นของตัวเองได้ แก้ของคนอื่นไม่ได้
 //  - คนที่ไม่มีชื่อในบุคลากร หรือถูกระงับ : ไม่เห็นอะไรเลย
 // =====================================================================
 
@@ -44,6 +45,12 @@ service cloud.firestore {
       return isStaff() && exists(p('subjects/' + id)) && email() in subjectDoc(id).data.get('teachers', []);
     }
     function canSubject(id) { return isAdmin() || isSubjectTeacher(id); }
+    // ครูประจำชั้นของห้องที่เรียนวิชานี้ (ดูได้อย่างเดียว)
+    function isHomeroomOf(id) {
+      return isStaff() && exists(p('subjects/' + id))
+        && (subjectDoc(id).data.get('level', '') + '|' + subjectDoc(id).data.get('room', '')) in me().homerooms;
+    }
+    function canReadSubject(id) { return canSubject(id) || isHomeroomOf(id); }
     function subjectLocked(id) {
       return exists(p('subjects/' + id)) && subjectDoc(id).data.get('config', {}).get('locked', false) == true;
     }
@@ -60,7 +67,13 @@ service cloud.firestore {
       // ผู้ดูแลคนแรกสร้างเอกสารของตนเองได้ครั้งแรก
       allow create: if isAdmin() || (isBootstrap() && uid == email()
                         && request.resource.data.role == 'admin' && request.resource.data.active == true);
-      allow update, delete: if isAdmin();
+      // ครูเลือกห้องประจำชั้นของตนเองได้ (แก้ได้เฉพาะช่อง homerooms ของตัวเอง)
+      allow update: if isAdmin() || (
+        isStaff() && uid == email()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['homerooms'])
+        && request.resource.data.homerooms is list && request.resource.data.homerooms.size() <= 20
+      );
+      allow delete: if isAdmin();
     }
 
     // ---------- รายชื่อนักเรียนตามห้อง/ภาคเรียน ----------
@@ -75,30 +88,38 @@ service cloud.firestore {
 
     // ---------- รายวิชา (รวมสัดส่วน องค์ประกอบคะแนน และภาระงาน) ----------
     match /subjects/{subjectId} {
-      allow read: if isAdmin() || (isStaff() && email() in resource.data.teachers);
-      allow create: if isAdmin()
-        || (isStaff() && request.resource.data.teachers == [email()]
-            && request.resource.data.subject_id == subjectId);
-      // ครูแก้วิชาของตนได้ แต่เปลี่ยนรายชื่อครูผู้สอนไม่ได้
+      // ครูทุกคนเห็นรายการวิชา เพื่อเลือกรับสอนได้เอง (คะแนนยังเห็นเฉพาะครูผู้สอน/ครูประจำชั้น)
+      allow read: if isStaff();
+      // สร้างวิชาใหม่: เฉพาะผู้ดูแล
+      allow create: if isAdmin();
       allow update: if isAdmin()
+        // ครูผู้สอนแก้วิชาของตนได้ (สัดส่วน องค์ประกอบ ภาระงาน) แต่เปลี่ยนรายชื่อครูไม่ได้
         || (isStaff() && email() in resource.data.teachers
-            && request.resource.data.teachers == resource.data.teachers
-            && request.resource.data.subject_id == resource.data.subject_id);
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['teachers', 'teacher_names', 'subject_id', 'semester', 'academic_year', 'level', 'room']))
+        // ครูรับสอน/เลิกสอนได้ — เปลี่ยนได้เฉพาะชื่อตัวเองในรายชื่อครู
+        || (isStaff()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['teachers', 'teacher_names'])
+            && request.resource.data.teachers.toSet().difference(resource.data.get('teachers', []).toSet())
+                 .union(resource.data.get('teachers', []).toSet().difference(request.resource.data.teachers.toSet()))
+                 .hasOnly([email()])
+            && request.resource.data.get('teacher_names', {}).diff(resource.data.get('teacher_names', {})).affectedKeys().hasOnly([email()]));
       allow delete: if isAdmin();
     }
 
     // ---------- คะแนน + สถานะ ร/มส/0 (ล็อกแล้วแก้ไม่ได้) ----------
     match /scoreSheets/{subjectId} {
-      allow read: if canSubject(subjectId);
+      allow read: if canReadSubject(subjectId);
       allow write: if canSubject(subjectId) && !subjectLocked(subjectId);
     }
 
     // ---------- เช็คชื่อรายวิชา / ส่งงาน (หนึ่งเอกสารต่อวิชา) ----------
     match /attendanceBook/{subjectId} {
-      allow read, write: if canSubject(subjectId);
+      allow read: if canReadSubject(subjectId);
+      allow write: if canSubject(subjectId);
     }
     match /taskBook/{subjectId} {
-      allow read, write: if canSubject(subjectId);
+      allow read: if canReadSubject(subjectId);
+      allow write: if canSubject(subjectId);
     }
 
     // ---------- เช็คชื่อประจำชั้น (หนึ่งเอกสารต่อห้องต่อภาคเรียน) ----------

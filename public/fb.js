@@ -26,5 +26,5 @@ export const {
 
 export const {
   doc, collection, getDoc, getDocs, setDoc, updateDoc, deleteDoc, query, where,
-  writeBatch, serverTimestamp, deleteField, FieldPath, onSnapshot
+  writeBatch, serverTimestamp, deleteField, FieldPath, onSnapshot, arrayUnion, arrayRemove
 } = fsMod;

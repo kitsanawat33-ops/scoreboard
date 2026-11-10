@@ -56,6 +56,11 @@ const S = {
 };
 
 export const isAdmin = () => !!S.me && S.me.role === 'admin';
+// มุมมอง: 'admin' = เห็นทั้งโรงเรียน, 'mine' = เห็นเฉพาะงานของตัวเอง (ครูทุกคนเป็น mine เสมอ)
+S.view = 'mine';
+const seeAll = () => isAdmin() && S.view === 'admin';
+export function setView(v) { S.view = (v === 'admin' && isAdmin()) ? 'admin' : 'mine'; return S.view; }
+const mySubject = s => (s.teachers || []).includes(S.me && S.me.email);
 export const me = () => S.me;
 
 // ---------------------------------------------------------------------
@@ -644,7 +649,7 @@ function subjectOut(d) {
 
 export async function getSubjects(semester, academicYear) {
   let docs;
-  if (isAdmin()) {
+  if (seeAll()) {
     const q = (semester || academicYear)
       ? F.query(F.collection(db, 'subjects'), F.where('semester', '==', str(semester)), F.where('academic_year', '==', str(academicYear)))
       : F.collection(db, 'subjects');
@@ -654,7 +659,78 @@ export async function getSubjects(semester, academicYear) {
     docs = (await F.getDocs(q)).docs.map(d => d.data());
     if (semester || academicYear) docs = docs.filter(s => str(s.semester) === str(semester) && str(s.academic_year) === str(academicYear));
   }
-  return docs.map(subjectOut).sort((a, b) => (a.level + a.room + a.subject_code).localeCompare(b.level + b.room + b.subject_code, 'th'));
+  return docs.map(subjectOut).sort(subjectSort);
+}
+const subjectSort = (a, b) => (a.level + '/' + a.room).localeCompare(b.level + '/' + b.room, 'th', { numeric: true }) || String(a.subject_code).localeCompare(String(b.subject_code), 'th');
+
+// ---------------------------------------------------------------------
+// งานสอน: รายวิชาทั้งหมดของภาคเรียน (ให้ครูเลือกรับสอน) / ห้องประจำชั้น
+// ---------------------------------------------------------------------
+export async function getSubjectCatalog(semester, academicYear) {
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  const q = F.query(F.collection(db, 'subjects'), F.where('semester', '==', sem), F.where('academic_year', '==', yr));
+  const docs = (await F.getDocs(q)).docs.map(d => d.data()).filter(s => s.status !== 'INACTIVE');
+  return docs.map(s => ({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, level: s.level, room: s.room,
+    teachers: s.teachers || [], teacher_names: s.teacher_names || {}, credit: (s.config || {}).credit })).sort(subjectSort);
+}
+export async function getRoomList(semester, academicYear) {
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  const rosters = await termRosters(sem, yr);
+  return rosters.map(r => ({ key: `${r.level}|${r.room}`, level: r.level, room: r.room,
+    count: Object.values(r.students || {}).filter(s => s.status !== 'INACTIVE').length }))
+    .sort((a, b) => (a.level + '/' + a.room).localeCompare(b.level + '/' + b.room, 'th', { numeric: true }));
+}
+// รับสอน / เลิกสอน — ครูทำได้กับตัวเอง ผู้ดูแลทำให้ใครก็ได้
+export async function assignSubject(subjectId, email, on, name) {
+  const e = str(email || S.me.email).toLowerCase();
+  if (e !== S.me.email) requireAdmin();
+  const r = ref('subjects', String(subjectId));
+  const patch = { teachers: on ? F.arrayUnion(e) : F.arrayRemove(e) };
+  const args = [new F.FieldPath('teachers'), patch.teachers, new F.FieldPath('teacher_names', e), on ? str(name || (e === S.me.email ? S.me.name : e)) : F.deleteField()];
+  await commit(F.updateDoc(r, ...args));
+  return getSubjectCatalog();
+}
+// เป็น/เลิกเป็นครูประจำชั้น — ครูทำได้กับตัวเอง ผู้ดูแลทำให้ใครก็ได้
+export async function assignHomeroom(key, email, on) {
+  const e = str(email || S.me.email).toLowerCase();
+  if (e !== S.me.email) requireAdmin();
+  if (!/^[^|]+\|[^|]+$/.test(str(key))) throw new Error('ห้องไม่ถูกต้อง');
+  await commit(F.updateDoc(ref('users', e), { homerooms: on ? F.arrayUnion(str(key)) : F.arrayRemove(str(key)) }));
+  if (e === S.me.email) {
+    const set = new Set(S.me.homerooms || []);
+    on ? set.add(str(key)) : set.delete(str(key));
+    S.me.homerooms = [...set];
+  }
+  return { homerooms: e === S.me.email ? S.me.homerooms : null };
+}
+// ภาพรวมภาระงานครู (ผู้ดูแล)
+export async function getWorkload(semester, academicYear) {
+  requireAdmin();
+  const [users, catalog, rooms] = await Promise.all([getUsers(), getSubjectCatalog(semester, academicYear), getRoomList(semester, academicYear)]);
+  return { users, catalog, rooms };
+}
+// ผลการเรียนทั้งห้อง (ครูประจำชั้น: ดูได้ แก้ไม่ได้)
+export async function getHomeroomGrades(key, semester, academicYear) {
+  const [level, room] = str(key).split('|');
+  if (!seeAll() && !isAdmin() && !(S.me.homerooms || []).includes(str(key))) throw new Error('คุณไม่ได้เป็นครูประจำชั้นของห้องนี้');
+  const catalog = (await getSubjectCatalog(semester, academicYear)).filter(s => str(s.level) === level && str(s.room) === room);
+  const subjects = [], students = {};
+  const all = await Promise.all(catalog.map(s => getScoreEntryData(s.subject_id).catch(() => null)));
+  for (let i = 0; i < catalog.length; i++) {
+    const s = catalog[i], data = all[i];
+    if (!data) continue;
+    const credit = num(data.config.credit || 0);
+    subjects.push({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, credit, teachers: s.teachers, teacher_names: s.teacher_names });
+    data.rows.forEach(r => {
+      const st = students[r.student_id] = students[r.student_id] || { student_id: r.student_id, first_name: r.first_name, last_name: r.last_name, grades: {}, q: 0, c: 0 };
+      st.grades[s.subject_id] = { grade: r.grade, total: r.total, status: r.status };
+      if (credit > 0 && r.status === 'NORMAL' && r.grade !== '' && r.grade != null) { st.q += num(r.point || 0) * credit; st.c += credit; }
+      else if (credit > 0 && r.status === 'ZERO') st.c += credit;
+    });
+  }
+  const list = Object.values(students).map(s => ({ ...s, gpa: s.c ? s.q / s.c : null }))
+    .sort((a, b) => String(a.student_id).localeCompare(String(b.student_id), 'th', { numeric: true }));
+  return { level, room, subjects, students: list };
 }
 
 async function getSubject(subjectId, fresh = true) {
@@ -667,6 +743,7 @@ async function getSubject(subjectId, fresh = true) {
 }
 
 export async function saveSubject(subject) {
+  if (!str(subject.subject_id)) requireAdmin();
   if (!str(subject.subject_name)) throw new Error('กรุณากรอกชื่อวิชา');
   const sem = str(subject.semester || S.term.sem), yr = str(subject.academic_year || S.term.yr);
   const id = str(subject.subject_id) || uid(10);
@@ -706,6 +783,7 @@ export async function importSubjects(list, opts = {}) {
       const patch = { updated_at: nowIso() };
       if (credit) patch.config = Object.assign({}, prev.config || {}, { credit });
       if (teachers.length) patch.teachers = [...new Set([...(prev.teachers || []), ...teachers])];
+      if (teachers.length) patch.teacher_names = Object.assign({}, prev.teacher_names || {}, x.teacher_names || {});
       ops.push([ref('subjects', prev.subject_id), patch, true]);
       Object.assign(prev, patch);
       updated++;
@@ -714,7 +792,7 @@ export async function importSubjects(list, opts = {}) {
     const id = uid(10);
     const doc = Object.assign({ config: Object.assign(defaultConfig(), credit ? { credit } : {}), items: {}, tasks: {} }, rec, {
       subject_id: id, semester: sem, academic_year: yr, max_score: 100, status: 'ACTIVE',
-      teachers, updated_at: nowIso(), source: 'timetable'
+      teachers, teacher_names: x.teacher_names || {}, updated_at: nowIso(), source: 'timetable'
     });
     ops.push([ref('subjects', id), doc, false]);
     have.set(key(rec), doc);
@@ -736,7 +814,6 @@ export async function deleteSubject(subjectId, semester, academicYear) {
 export async function setSubjectTeachers(subjectId, emails) {
   requireAdmin();
   const list = Array.from(new Set((emails || []).map(e => str(e).toLowerCase()).filter(Boolean)));
-  if (!list.length) throw new Error('ต้องมีครูผู้สอนอย่างน้อย 1 คน');
   await commit(F.updateDoc(ref('subjects', String(subjectId)), { teachers: list, updated_at: nowIso() }));
   return getSubjects(S.term.sem, S.term.yr);
 }
@@ -965,7 +1042,7 @@ function summarizeBook(subject, students, days, statuses, withScore) {
 export async function getMyHomerooms(semester, academicYear) {
   const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
   const rosters = await termRosters(sem, yr);
-  const mine = isAdmin() ? rosters : rosters.filter(r => (S.me.homerooms || []).includes(`${r.level}|${r.room}`));
+  const mine = seeAll() ? rosters : rosters.filter(r => (S.me.homerooms || []).includes(`${r.level}|${r.room}`));
   return mine.map(r => ({ roster_id: r._id, level: r.level, room: r.room, semester: sem, academic_year: yr,
     count: Object.values(r.students || {}).filter(s => s.status !== 'INACTIVE').length }))
     .sort((a, b) => (a.level + a.room).localeCompare(b.level + b.room, 'th', { numeric: true }));

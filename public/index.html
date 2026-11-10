@@ -47,7 +47,12 @@
         <button class="sidebar-close" onclick="toggleSidebar(false)" aria-label="ปิดเมนู">×</button>
       </div>
 
+      <div class="view-switch admin-role-only" role="group" aria-label="มุมมอง">
+        <button id="viewMine" onclick="setViewMode('mine')">👩‍🏫 งานของฉัน</button>
+        <button id="viewAdmin" onclick="setViewMode('admin')">🛠️ ผู้ดูแลระบบ</button>
+      </div>
       <nav>
+        <div class="nav-label">งานของฉัน</div>
         <button class="nav-btn active" data-page="dashboard">
           <span class="px-icon">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
@@ -56,16 +61,6 @@
             </svg>
           </span>
           Dashboard
-        </button>
-        <button class="nav-btn" data-page="scores">
-          <span class="px-icon">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-              <path d="M3 2H11L14 5V14H3V2Z" fill="#3498DB"/>
-              <path d="M5 6H9V7H5V6ZM5 8H11V9H5V8ZM5 10H11V11H5V10Z" fill="#FFFFFF"/>
-              <path d="M10 2V6H14L10 2Z" fill="#2980B9"/>
-            </svg>
-          </span>
-          บันทึกคะแนน
         </button>
         <button class="nav-btn" data-page="attendance">
           <span class="px-icon">
@@ -78,6 +73,16 @@
           </span>
           เช็คชื่อ
         </button>
+        <button class="nav-btn" data-page="scores">
+          <span class="px-icon">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+              <path d="M3 2H11L14 5V14H3V2Z" fill="#3498DB"/>
+              <path d="M5 6H9V7H5V6ZM5 8H11V9H5V8ZM5 10H11V11H5V10Z" fill="#FFFFFF"/>
+              <path d="M10 2V6H14L10 2Z" fill="#2980B9"/>
+            </svg>
+          </span>
+          บันทึกคะแนน
+        </button>
         <button class="nav-btn" data-page="tasks">
           <span class="px-icon">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
@@ -88,26 +93,6 @@
             </svg>
           </span>
           เช็คงาน
-        </button>
-        <button class="nav-btn" data-page="students">
-          <span class="px-icon">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-              <path d="M8 2L1 5L8 8L15 5L8 2Z" fill="#9B59B6"/>
-              <path d="M4 7V11C4 13 8 14 8 14C8 14 12 13 12 11V7L8 9L4 7Z" fill="#8E44AD"/>
-              <path d="M14 6V11H15V6H14Z" fill="#F1C40F"/>
-            </svg>
-          </span>
-          นักเรียน
-        </button>
-        <button class="nav-btn" data-page="subjects">
-          <span class="px-icon">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
-              <path d="M3 2H13V14H3V2Z" fill="#E74C3C"/>
-              <path d="M5 4H11V6H5V4Z" fill="#FFFFFF"/>
-              <path d="M5 8H11V9H5V8ZM5 10H9V11H5V10Z" fill="#C0392B"/>
-            </svg>
-          </span>
-          รายวิชา
         </button>
         <button class="nav-btn" data-page="items">
           <span class="px-icon">
@@ -128,6 +113,33 @@
           </span>
           รายงาน
         </button>
+        <button class="nav-btn" data-page="mywork">
+          <span class="px-icon">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M2 4H14V13H2V4Z" fill="#5B6CFF"/><path d="M6 2H10V4H6V2Z" fill="#3F4ED8"/><path d="M5 8L7 10L11 6" stroke="#FFFFFF" stroke-width="1.6"/></svg>
+          </span>
+          งานสอนของฉัน
+        </button>
+        <button class="nav-btn" data-page="students">
+          <span class="px-icon">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2L1 5L8 8L15 5L8 2Z" fill="#9B59B6"/>
+              <path d="M4 7V11C4 13 8 14 8 14C8 14 12 13 12 11V7L8 9L4 7Z" fill="#8E44AD"/>
+              <path d="M14 6V11H15V6H14Z" fill="#F1C40F"/>
+            </svg>
+          </span>
+          นักเรียน
+        </button>
+        <div class="nav-label admin-only">ผู้ดูแลระบบ</div>
+        <button class="nav-btn admin-only" data-page="subjects">
+          <span class="px-icon">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+              <path d="M3 2H13V14H3V2Z" fill="#E74C3C"/>
+              <path d="M5 4H11V6H5V4Z" fill="#FFFFFF"/>
+              <path d="M5 8H11V9H5V8ZM5 10H9V11H5V10Z" fill="#C0392B"/>
+            </svg>
+          </span>
+          รายวิชาทั้งหมด
+        </button>
         <button class="nav-btn admin-only" data-page="users">
           <span class="px-icon">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
@@ -136,7 +148,13 @@
               <path d="M11 4H14V7H11V4ZM11 9H15V13H12V9Z" fill="#F5B041"/>
             </svg>
           </span>
-          บุคลากร / สิทธิ์
+          บุคลากร / ภาระงาน
+        </button>
+        <button class="nav-btn admin-only" data-page="dataio">
+          <span class="px-icon">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M2 10V14H14V10H12V12H4V10H2Z" fill="#1877F2"/><path d="M7 2H9V7H12L8 11L4 7H7V2Z" fill="#1877F2"/></svg>
+          </span>
+          นำเข้า / ส่งออกข้อมูล
         </button>
       </nav>
 
@@ -157,32 +175,6 @@
             </svg>
           </span>
           จัดการภาคเรียน
-        </button>
-        <button class="ghost-btn admin-only" onclick="openLegacyImportModal()">
-          <span class="px-icon">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M8 1L10 6H15L11 9L13 14L8 11L3 14L5 9L1 6H6L8 1Z" fill="#F1C40F"/>
-            </svg>
-          </span>
-          ย้ายข้อมูลจากระบบเดิม
-        </button>
-        <button class="ghost-btn admin-only" onclick="openImportModal()">
-          <span class="px-icon">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M2 10V14H14V10H12V12H4V10H2Z" fill="#1877F2"/>
-              <path d="M7 2H9V7H12L8 11L4 7H7V2Z" fill="#1877F2"/>
-            </svg>
-          </span>
-          นำเข้า CSV
-        </button>
-        <button class="ghost-btn" onclick="openExportStudentsModal()">
-          <span class="px-icon">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M2 10V14H14V10H12V12H4V10H2Z" fill="#2ECC71"/>
-              <path d="M7 11H9V6H12L8 2L4 6H7V11Z" fill="#2ECC71"/>
-            </svg>
-          </span>
-          ส่งออก CSV
         </button>
         <div class="me-box">
           <div class="me-avatar" id="meAvatar">?</div>
@@ -471,6 +463,11 @@
 
       <section id="page-reports" class="page">
         <div class="toolbar"><div><h2>รายงานผลการเรียน</h2><p>สรุปคะแนนและเกรดรายบุคคล</p></div></div>
+        <div class="panel homeroom-only">
+          <div class="mw-head"><div><h3>ผลการเรียนห้องประจำชั้น</h3><p>ดูเกรดทุกวิชาของนักเรียนในห้อง (ดูอย่างเดียว แก้ไขได้เฉพาะครูผู้สอน)</p></div>
+            <div class="mw-tools"><select id="hrGradeRoom"></select><button class="primary" onclick="loadHomeroomGrades()">ดูผลการเรียน</button></div></div>
+          <div id="hrGradeBox"></div>
+        </div>
         <div class="panel">
           <div class="form-row"><label>เลือกนักเรียน</label><select id="reportStudent" onchange="loadReport()"></select></div>
           <div id="reportBox"></div>
@@ -480,11 +477,40 @@
           <div id="classReportBox"></div>
         </div>
       </section>
+      <section id="page-mywork" class="page">
+        <div class="toolbar">
+          <div><h2>งานสอนของฉัน</h2><p>เลือกวิชาที่คุณสอนและห้องที่คุณเป็นครูประจำชั้น ระบบจะแสดงเฉพาะงานของคุณในหน้าเช็คชื่อ บันทึกคะแนน และเช็คงาน</p></div>
+        </div>
+        <div class="panel">
+          <div class="mw-head"><div><h3>ห้องประจำชั้น</h3><p>กดเลือกห้องที่คุณเป็นครูประจำชั้น • 1 ห้องมีครูประจำชั้นได้หลายคน</p></div></div>
+          <div id="mwRooms" class="room-grid"></div>
+        </div>
+        <div class="panel">
+          <div class="mw-head">
+            <div><h3>วิชาที่สอน</h3><p>กด "รับสอน" วิชาที่คุณสอน • ไม่พบวิชาของคุณ แจ้งผู้ดูแลระบบให้เพิ่มวิชา</p></div>
+            <div class="mw-tools"><input id="mwSearch" placeholder="🔍 ค้นหารหัส / ชื่อวิชา" oninput="renderAssign()">
+              <select id="mwFilter" onchange="renderAssign()"><option value="all">ทุกวิชา</option><option value="mine">เฉพาะที่ฉันสอน</option><option value="free">ยังไม่มีครู</option></select></div>
+          </div>
+          <div id="mwSubjects"></div>
+        </div>
+      </section>
+
+      <section id="page-dataio" class="page">
+        <div class="toolbar"><div><h2>นำเข้า / ส่งออกข้อมูล</h2><p>รวมเครื่องมือนำเข้าและส่งออกทั้งหมดไว้ที่นี่ (เฉพาะผู้ดูแลระบบ)</p></div></div>
+        <div class="io-grid">
+          <button class="io-card" onclick="openImportModal()"><b>👥 นำเข้ารายชื่อนักเรียน</b><span>CSV จาก SchoolMIS หรือไฟล์ใบรายชื่อ .xlsx เลือกเฉพาะห้องได้</span></button>
+          <button class="io-card" onclick="openSubjectImportModal()"><b>📚 นำเข้ารายวิชา</b><span>ไฟล์ .json จากระบบจัดตารางสอน แยกวิชาตามห้อง และจับคู่ครูผู้สอน</span></button>
+          <button class="io-card" onclick="openExportStudentsModal()"><b>📤 ส่งออกรายชื่อนักเรียน</b><span>ดาวน์โหลดรายชื่อนักเรียนเป็นไฟล์ CSV</span></button>
+          <button class="io-card" onclick="openLegacyImportModal()"><b>⭐ ย้ายข้อมูลจากระบบเดิม</b><span>ไฟล์ .xlsx จาก Google Sheets ของระบบ ScoreBoard เดิม (คะแนน เช็คชื่อ ส่งงาน)</span></button>
+        </div>
+      </section>
+
       <section id="page-users" class="page">
         <div class="toolbar">
-          <div><h2>บุคลากร / สิทธิ์</h2><p>บุคลากรเข้าระบบด้วยบัญชี Google ตามอีเมลที่ลงทะเบียน • ครูเห็นเฉพาะรายวิชาที่ตนเป็นครูผู้สอน • ครูประจำชั้นเช็คชื่อได้เฉพาะห้องของตน</p></div>
+          <div><h2>บุคลากร / ภาระงาน</h2><p>เพิ่มอีเมลครูเพื่อให้เข้าระบบได้ • ครูเลือกวิชาที่สอนและห้องประจำชั้นได้เองที่เมนู "งานสอนของฉัน" หรือผู้ดูแลกด "จัดงาน" ให้ก็ได้</p></div>
           <div class="toolbar-actions"><button class="primary" onclick="openUserModal()">+ เพิ่มบุคลากร</button></div>
         </div>
+        <div id="unassignedBox"></div>
         <div class="panel"><div class="table-wrap"><table id="usersTable"></table></div></div>
       </section>
     </main>

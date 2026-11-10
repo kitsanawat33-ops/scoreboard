@@ -18,7 +18,10 @@ let editingTaskStatusId = null;
 let taskSummaryBaseScore = 10;
 let usersCache = [];
 
-function isAdminUI(){ return !!(state.me && state.me.role === 'admin'); }
+let viewMode = 'mine';
+function isAdminRole(){ return !!(state.me && state.me.role === 'admin'); }
+function isAdminUI(){ return isAdminRole() && viewMode === 'admin'; }
+function myHomerooms(){ return (state.me && state.me.homerooms) || []; }
 function teacherName(email){
   const u = usersCache.find(x => x.email === email);
   return u ? (u.name || email) : email;
@@ -135,14 +138,26 @@ function friendlyError(e){
 
 async function loadApp(){
   try{
+    if (API.me() && API.me().role === 'admin') {
+      let saved = null; try { saved = localStorage.getItem('classhub_view'); } catch (e) {}
+      viewMode = API.setView(saved || 'admin');
+    } else viewMode = API.setView('mine');
     state = await gas('getInitialData');
     state.currentSemester = String(state.settings.CURRENT_SEMESTER || '1');
     state.currentYear = String(state.settings.CURRENT_YEAR || '2569');
     state.registeredTerms = state.registeredTerms || ['1/2569'];
-    if (isAdminUI()) { try { usersCache = await API.getUsers(); } catch (e) { usersCache = []; } }
+    if (isAdminRole()) { try { usersCache = await API.getUsers(); } catch (e) { usersCache = []; } }
     renderAll();
     const first = document.getElementById('subjectSelectTop')?.value;
     if (first) API.prefetchSubject(first);
+    const cur = document.querySelector('.page.active')?.id?.replace('page-', '');
+    if (cur && document.querySelector(`.nav-btn[data-page="${cur}"]`)?.classList.contains('admin-only') && !isAdminUI()) showPage('dashboard');
+    // ครูที่ยังไม่ได้เลือกงานสอน: พาไปหน้า "งานสอนของฉัน" ก่อน
+    if (viewMode === 'mine' && !state.subjects.length && !myHomerooms().length && !loadApp.welcomed) {
+      loadApp.welcomed = true;
+      showPage('mywork');
+      toast('ยินดีต้อนรับ! เลือกวิชาที่คุณสอนและห้องประจำชั้นก่อนเริ่มใช้งาน');
+    }
   }catch(e){ console.error(e); }
 }
 
@@ -158,13 +173,17 @@ function categories(){
 
 function renderAll(){
   document.body.classList.toggle('is-admin', isAdminUI());
-  document.body.classList.toggle('has-homeroom', isAdminUI() || ((state.me && state.me.homerooms) || []).length > 0);
+  document.body.classList.toggle('is-admin-role', isAdminRole());
+  document.body.classList.toggle('has-homeroom', isAdminUI() || myHomerooms().length > 0);
+  document.getElementById('viewMine')?.classList.toggle('active', viewMode === 'mine');
+  document.getElementById('viewAdmin')?.classList.toggle('active', viewMode === 'admin');
   document.getElementById('schoolName').textContent = state.settings.SCHOOL_NAME || '';
   document.getElementById('sidebarTermLabel').textContent = `${state.currentSemester}/${state.currentYear}`;
   document.getElementById('dashboardTermEyebrow').textContent = `SEMESTER ${state.currentSemester} / ${state.currentYear}`;
   const me = state.me || {};
   document.getElementById('meName').textContent = me.name || me.email || '';
-  document.getElementById('meRole').textContent = isAdminUI() ? 'ผู้ดูแลระบบ' : 'ครู';
+  document.getElementById('meRole').textContent = isAdminRole() ? (viewMode === 'admin' ? 'ผู้ดูแลระบบ' : 'ผู้ดูแล • โหมดครู') : 'ครู';
+  fillHomeroomGradeSelect();
   document.getElementById('meAvatar').textContent = (me.name || me.email || '?').trim().charAt(0).toUpperCase();
   updateNetBadge();
 
@@ -437,7 +456,7 @@ function showPage(page){
   document.querySelectorAll('.nav-btn').forEach(x=>x.classList.toggle('active', x.dataset.page===page));
   document.querySelectorAll('.tablet-nav-item').forEach(x=>x.classList.toggle('active', x.dataset.page===page));
 
-  const titles={dashboard:'Dashboard',scores:'บันทึกคะแนน',attendance:'เช็คชื่อ',tasks:'เช็คงาน',students:'นักเรียน',subjects:'รายวิชา',items:'องค์ประกอบคะแนน',reports:'รายงานผลการเรียน',users:'บุคลากร / สิทธิ์'};
+  const titles={dashboard:'Dashboard',scores:'บันทึกคะแนน',attendance:'เช็คชื่อ',tasks:'เช็คงาน',students:'นักเรียน',subjects:'รายวิชาทั้งหมด',items:'องค์ประกอบคะแนน',reports:'รายงานผลการเรียน',users:'บุคลากร / ภาระงาน',mywork:'งานสอนของฉัน',dataio:'นำเข้า / ส่งออกข้อมูล'};
   document.getElementById('pageTitle').textContent=titles[page]||'Dashboard';
   
   if(page==='scores') loadScorePage();
@@ -449,6 +468,7 @@ function showPage(page){
   }
   if(page==='tasks') loadTaskPage();
   if(page==='users') loadUsersPage();
+  if(page==='mywork') loadMyWork();
   
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -819,22 +839,182 @@ function editAttendanceDate(date){
 }
 
 /* ===================== บุคลากร / สิทธิ์ (ผู้ดูแล) ===================== */
+let workloadCatalog = [];
 async function loadUsersPage(){
   if(!isAdminUI()) return;
-  usersCache = await gas('getUsers');
+  const w = await gas('getWorkload', state.currentSemester, state.currentYear);
+  usersCache = w.users; workloadCatalog = w.catalog; roomListCache = w.rooms;
   renderUsers();
 }
 function renderUsers(){
   const t = document.getElementById('usersTable');
   if(!usersCache.length){ t.innerHTML = '<tbody><tr><td class="empty">ยังไม่มีบุคลากร</td></tr></tbody>'; return; }
-  t.innerHTML = '<thead><tr><th>ชื่อ</th><th>อีเมล</th><th>บทบาท</th><th>ครูประจำชั้น</th><th>สถานะ</th><th></th></tr></thead><tbody>' +
+  const nSub = e => workloadCatalog.filter(s => (s.teachers||[]).includes(e)).length;
+  t.innerHTML = '<thead><tr><th>ชื่อ</th><th>อีเมล</th><th>บทบาท</th><th>วิชาที่สอน</th><th>ครูประจำชั้น</th><th>สถานะ</th><th></th></tr></thead><tbody>' +
     usersCache.map(u => `<tr>
       <td><b>${esc(u.name || '-')}</b></td><td>${esc(u.email)}</td>
       <td><span class="role-chip ${u.role==='admin'?'admin':''}">${u.role==='admin'?'ผู้ดูแลระบบ':'ครู'}</span></td>
+      <td>${nSub(u.email) ? `<b>${nSub(u.email)}</b> วิชา` : '<span style="color:var(--ink-faint)">-</span>'}</td>
       <td>${(u.homerooms||[]).map(h=>`<span class="room-chip">${esc(h.replace('|','/'))}</span>`).join(' ') || '<span style="color:var(--ink-faint)">-</span>'}</td>
       <td>${u.active===false?'<span class="state-chip off">ระงับ</span>':'<span class="state-chip on">ใช้งาน</span>'}</td>
-      <td><button class="small-btn" onclick="openUserModal('${esc(u.email)}')">แก้ไข</button></td></tr>`).join('') + '</tbody>';
+      <td style="white-space:nowrap"><button class="small-btn" onclick="openAssignModal('${esc(u.email)}')">จัดงาน</button> <button class="small-btn" onclick="openUserModal('${esc(u.email)}')">แก้ไข</button></td></tr>`).join('') + '</tbody>';
+  renderUnassigned();
 }
+function renderUnassigned(){
+  const box = document.getElementById('unassignedBox'); if (!box) return;
+  const free = workloadCatalog.filter(s => !(s.teachers||[]).length);
+  if (!workloadCatalog.length) { box.innerHTML = ''; return; }
+  const teachers = usersCache.filter(u => u.active !== false);
+  box.innerHTML = `<div class="panel">
+    <div class="mw-head"><div><h3>${free.length ? `⚠️ วิชาที่ยังไม่มีครู ${free.length} วิชา` : '✅ ทุกวิชามีครูผู้สอนแล้ว'}</h3>
+      <p>ภาคเรียน ${esc(state.currentSemester)}/${esc(state.currentYear)} • ทั้งหมด ${workloadCatalog.length} วิชา</p></div>
+      ${free.length ? `<button class="secondary" onclick="this.closest('.panel').classList.toggle('open')">แสดง / ซ่อน</button>` : ''}</div>
+    ${free.length ? `<div class="unassigned-list">${free.map(s => `<div class="ua-row">
+      <span><b>${esc(s.level)}/${esc(s.room)}</b> ${esc(s.subject_code||'')} ${esc(s.subject_name)}</span>
+      <select onchange="quickAssign('${esc(s.subject_id)}', this.value)"><option value="">— เลือกครู —</option>${teachers.map(u => `<option value="${esc(u.email)}">${esc(u.name || u.email)}</option>`).join('')}</select>
+    </div>`).join('')}</div>` : ''}
+  </div>`;
+}
+async function quickAssign(subjectId, email){
+  if (!email) return;
+  workloadCatalog = await gas('assignSubject', subjectId, email, true, teacherName(email));
+  renderUsers(); toast('กำหนดครูผู้สอนแล้ว');
+  document.querySelector('#unassignedBox .panel')?.classList.add('open');
+}
+/* ===================== มุมมอง: งานของฉัน | ผู้ดูแลระบบ ===================== */
+async function setViewMode(mode){
+  if (!isAdminRole() || mode === viewMode) return;
+  try { localStorage.setItem('classhub_view', mode); } catch (e) {}
+  await loadApp();
+  toast(mode === 'admin' ? 'โหมดผู้ดูแลระบบ — เห็นทุกวิชาและทุกห้อง' : 'โหมดงานของฉัน — เห็นเฉพาะวิชาที่คุณสอนและห้องประจำชั้นของคุณ');
+}
+
+/* ===================== งานสอน: ครูเลือกเอง / ผู้ดูแลจัดให้ ===================== */
+let roomListCache = [];
+let asg = null;   // { email, name, self, catalog, rooms, homerooms:Set, box:'mw'|'am' }
+
+async function loadMyWork(){
+  const me = state.me || {};
+  asg = { email: me.email, name: me.name, self: true, box: 'mw', catalog: [], rooms: [], homerooms: new Set(myHomerooms()) };
+  document.getElementById('mwSubjects').innerHTML = '<div class="empty">กำลังโหลด...</div>';
+  try {
+    const [catalog, rooms] = await Promise.all([gas('getSubjectCatalog', state.currentSemester, state.currentYear), API.getRoomList(state.currentSemester, state.currentYear)]);
+    asg.catalog = catalog; asg.rooms = rooms; roomListCache = rooms;
+  } catch (e) { return; }
+  renderAssign();
+}
+
+function tName(s, e){ return (s.teacher_names || {})[e] || (usersCache.find(u => u.email === e) || {}).name || e.split('@')[0]; }
+
+function renderAssign(){
+  if (!asg) return;
+  const p = asg.box;
+  const roomsBox = document.getElementById(p + 'Rooms'), subBox = document.getElementById(p + 'Subjects');
+  if (!roomsBox || !subBox) return;
+  roomsBox.innerHTML = asg.rooms.length ? asg.rooms.map(r => {
+    const on = asg.homerooms.has(r.key);
+    return `<button class="room-pick${on ? ' on' : ''}" onclick="toggleRoomAssign('${esc(r.key)}')"><b>${esc(r.level)}/${esc(r.room)}</b><small>${r.count} คน</small>${on ? '<i>✓ ประจำชั้น</i>' : ''}</button>`;
+  }).join('') : '<div class="empty">ยังไม่มีรายชื่อนักเรียนในภาคเรียนนี้</div>';
+
+  const q = (document.getElementById(p + 'Search')?.value || '').trim().toLowerCase();
+  const f = document.getElementById(p + 'Filter')?.value || 'all';
+  const list = asg.catalog.filter(s => {
+    const mine = s.teachers.includes(asg.email);
+    if (f === 'mine' && !mine) return false;
+    if (f === 'free' && s.teachers.length) return false;
+    return !q || `${s.subject_code} ${s.subject_name} ${s.level}/${s.room}`.toLowerCase().includes(q);
+  });
+  const mineCount = asg.catalog.filter(s => s.teachers.includes(asg.email)).length;
+  if (!asg.catalog.length) { subBox.innerHTML = '<div class="empty">ยังไม่มีรายวิชาในภาคเรียนนี้ — ผู้ดูแลระบบนำเข้าได้ที่เมนู "นำเข้า / ส่งออกข้อมูล"</div>'; return; }
+  const groups = {};
+  list.forEach(s => (groups[`${s.level}/${s.room}`] = groups[`${s.level}/${s.room}`] || []).push(s));
+  subBox.innerHTML = `<p class="mw-count">${asg.self ? 'คุณ' : esc(asg.name || asg.email)} สอนอยู่ <b>${mineCount}</b> วิชา</p>` + (Object.keys(groups).length ? Object.keys(groups).map(k => `
+    <div class="mw-group"><div class="mw-group-h">ชั้น ${esc(k)}</div>
+    ${groups[k].map(s => {
+      const mine = s.teachers.includes(asg.email);
+      const others = s.teachers.filter(e => e !== asg.email);
+      return `<div class="mw-sub${mine ? ' on' : ''}">
+        <div class="mw-sub-main"><b>${esc(s.subject_code || '')} ${esc(s.subject_name)}</b>
+          <small>${s.credit ? s.credit + ' นก. • ' : ''}${others.length ? 'ครู: ' + others.map(e => esc(tName(s, e))).join(', ') : (mine ? '' : '<span class="mw-free">ยังไม่มีครู</span>')}</small></div>
+        <button class="mw-btn${mine ? ' on' : ''}" onclick="toggleSubjectAssign('${esc(s.subject_id)}')">${mine ? '✓ สอนอยู่' : '+ รับสอน'}</button>
+      </div>`; }).join('')}</div>`).join('') : '<div class="empty">ไม่พบวิชาตามเงื่อนไข</div>');
+}
+
+async function toggleSubjectAssign(id){
+  const s = asg.catalog.find(x => x.subject_id === id); if (!s) return;
+  const on = !s.teachers.includes(asg.email);
+  if (!on && !confirm(`เลิกสอน ${s.subject_code || ''} ${s.subject_name} ${s.level}/${s.room}?\nคะแนนและการเช็คชื่อที่บันทึกไว้ยังอยู่ครบ`)) return;
+  try { asg.catalog = await gas('assignSubject', id, asg.email, on, asg.name); } catch (e) { return; }
+  renderAssign();
+  await afterAssignChange();
+  toast(on ? 'รับสอนวิชานี้แล้ว' : 'เลิกสอนวิชานี้แล้ว');
+}
+async function toggleRoomAssign(key){
+  const on = !asg.homerooms.has(key);
+  try { await gas('assignHomeroom', key, asg.email, on); } catch (e) { return; }
+  on ? asg.homerooms.add(key) : asg.homerooms.delete(key);
+  renderAssign();
+  await afterAssignChange();
+  toast(on ? `เป็นครูประจำชั้น ${key.replace('|', '/')} แล้ว` : `เลิกเป็นครูประจำชั้น ${key.replace('|', '/')} แล้ว`);
+}
+async function afterAssignChange(){
+  if (asg.self) {
+    state.me.homerooms = [...asg.homerooms];
+    state.subjects = await API.getSubjects(state.currentSemester, state.currentYear);
+    document.body.classList.toggle('has-homeroom', isAdminUI() || myHomerooms().length > 0);
+    fillSubjectSelects(); renderSubjects(); fillHomeroomSelect(); fillHomeroomGradeSelect();
+  }
+  const u = usersCache.find(x => x.email === asg.email);
+  if (u) u.homerooms = [...asg.homerooms];
+  if (isAdminUI()) { workloadCatalog = asg.catalog; if (document.getElementById('page-users').classList.contains('active')) renderUsers(); }
+}
+
+// ผู้ดูแล: จัดงานให้ครูคนหนึ่ง
+async function openAssignModal(email){
+  const u = usersCache.find(x => x.email === email); if (!u) return;
+  asg = { email, name: u.name || email, self: email === (state.me || {}).email, box: 'am', catalog: workloadCatalog, rooms: roomListCache, homerooms: new Set(u.homerooms || []) };
+  document.getElementById('modalTitle').textContent = `จัดงาน • ${u.name || email}`;
+  document.getElementById('modalBody').innerHTML = `
+    <h4 class="am-h">ห้องประจำชั้น</h4><div id="amRooms" class="room-grid"></div>
+    <div class="mw-head" style="margin-top:14px"><h4 class="am-h">วิชาที่สอน</h4>
+      <div class="mw-tools"><input id="amSearch" placeholder="🔍 ค้นหา" oninput="renderAssign()">
+      <select id="amFilter" onchange="renderAssign()"><option value="all">ทุกวิชา</option><option value="mine">เฉพาะที่สอน</option><option value="free">ยังไม่มีครู</option></select></div></div>
+    <div id="amSubjects" class="am-list"></div>
+    <div class="modal-actions"><button class="primary" onclick="closeModal()">เสร็จ</button></div>`;
+  openModal();
+  renderAssign();
+}
+
+/* ===================== ผลการเรียนห้องประจำชั้น (ดูอย่างเดียว) ===================== */
+async function fillHomeroomGradeSelect(){
+  const sel = document.getElementById('hrGradeRoom'); if (!sel) return;
+  let keys = myHomerooms();
+  if (isAdminUI()) {
+    if (!roomListCache.length) { try { roomListCache = await API.getRoomList(state.currentSemester, state.currentYear); } catch (e) {} }
+    keys = roomListCache.map(r => r.key);
+  }
+  const old = sel.value;
+  sel.innerHTML = keys.length ? keys.map(k => `<option value="${esc(k)}">ชั้น ${esc(k.replace('|', '/'))}</option>`).join('') : '<option value="">-- ไม่มีห้องประจำชั้น --</option>';
+  if (keys.includes(old)) sel.value = old;
+}
+async function loadHomeroomGrades(){
+  const key = v('hrGradeRoom'); if (!key) return;
+  const box = document.getElementById('hrGradeBox');
+  let d; try { d = await gas('getHomeroomGrades', key, state.currentSemester, state.currentYear); } catch (e) { return; }
+  if (!d.subjects.length) { box.innerHTML = '<div class="empty">ยังไม่มีรายวิชาของห้องนี้ในภาคเรียนนี้</div>'; return; }
+  const cell = g => {
+    if (!g) return '<td class="hg-na">·</td>';
+    if (g.status && g.status !== 'NORMAL') return `<td class="hg-bad">${esc(STATUS_LABELS[g.status] || g.status)}</td>`;
+    const x = g.grade === '' || g.grade == null ? '-' : String(g.grade);
+    return `<td class="${x === '0' ? 'hg-bad' : x === '-' ? 'hg-na' : ''}" title="${g.total != null ? 'คะแนนรวม ' + Number(g.total).toFixed(1) : ''}">${esc(x)}</td>`;
+  };
+  box.innerHTML = `<p class="mw-count">ชั้น ${esc(key.replace('|', '/'))} • ${d.students.length} คน • ${d.subjects.length} วิชา • "-" = ยังไม่มีเกรด</p>
+    <div class="table-wrap"><table class="hg-table"><thead><tr><th>เลขประจำตัว</th><th>ชื่อ–สกุล</th>
+      ${d.subjects.map(s => `<th title="${esc(s.subject_name)} (${s.credit} นก.)">${esc(s.subject_code || s.subject_name)}<small>${esc(s.subject_name)}</small></th>`).join('')}<th>GPA</th></tr></thead>
+    <tbody>${d.students.map(st => `<tr><td>${esc(st.student_id)}</td><td class="hg-name">${esc(st.first_name)} ${esc(st.last_name)}</td>
+      ${d.subjects.map(s => cell(st.grades[s.subject_id])).join('')}<td><b>${st.gpa == null ? '-' : st.gpa.toFixed(2)}</b></td></tr>`).join('')}</tbody></table></div>`;
+}
+
 function openUserModal(email){
   const u = usersCache.find(x => x.email === email) || { role:'teacher', active:true, homerooms:[] };
   const isNew = !email;
@@ -1748,7 +1928,7 @@ async function processSubjectImport(){
   const nNew = rows.filter(r => !r.exists).length;
   if (!confirm(`ยืนยันนำเข้ารายวิชา ${rows.length} รายการ (ใหม่ ${nNew}) เข้าภาคเรียน ${state.currentSemester}/${state.currentYear}?`)) return;
   try {
-    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, credit: r.credit, teachers: r.email ? [r.email] : [] })),
+    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, credit: r.credit, teachers: r.email ? [r.email] : [], teacher_names: r.email ? { [r.email]: teacherName(r.email) } : {} })),
       { semester: state.currentSemester, academicYear: state.currentYear, update });
     state.subjects = res.subjects;
     fillTermSelects(); fillSubjectSelects(); renderSubjects(); renderDashboardStats();

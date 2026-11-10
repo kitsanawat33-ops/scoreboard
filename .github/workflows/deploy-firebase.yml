@@ -11,7 +11,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  rules-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install test libs
+        run: npm i --no-save --no-package-lock @firebase/rules-unit-testing@4 firebase@11
+      - name: Test Firestore rules on emulator
+        run: npx --yes firebase-tools@14 emulators:exec --only firestore --project demo-classhub "node tests/rules.test.mjs"
+
   deploy:
+    needs: rules-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

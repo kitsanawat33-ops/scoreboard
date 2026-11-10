@@ -141,6 +141,8 @@ async function loadApp(){
     state.registeredTerms = state.registeredTerms || ['1/2569'];
     if (isAdminUI()) { try { usersCache = await API.getUsers(); } catch (e) { usersCache = []; } }
     renderAll();
+    const first = document.getElementById('subjectSelectTop')?.value;
+    if (first) API.prefetchSubject(first);
   }catch(e){ console.error(e); }
 }
 
@@ -418,7 +420,8 @@ function syncSubject(val) {
   if (scoreSelect && scoreSelect.value !== val) scoreSelect.value = val;
   if (attSelect && attSelect.value !== val) attSelect.value = val;
   if (taskSelect && taskSelect.value !== val) taskSelect.value = val;
-  
+  if (val && window.API && API.prefetchSubject) API.prefetchSubject(val);
+
   const activePage = document.querySelector('.page.active')?.id;
   if (activePage === 'page-scores') loadScorePage();
   else if (activePage === 'page-items') renderItems();
@@ -2209,4 +2212,13 @@ function v(id){return document.getElementById(id)?.value||''}
 function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function maskCitizen(v){v=String(v||'');return v.length===13?v.slice(0,3)+'******'+v.slice(-4):esc(v)}
 function toast(msg,type='ok'){const t=document.getElementById('toast');t.textContent=msg;t.style.background=type==='error'?'#b91c1c':'#111827';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600)}
-function showLoading(x){document.getElementById('loading').classList.toggle('hidden',!x)}
+let loadingCount = 0, loadingTimer = null;
+function showLoading(x){
+  const el = document.getElementById('loading');
+  loadingCount = Math.max(0, loadingCount + (x ? 1 : -1));
+  if (loadingCount > 0) {
+    if (!loadingTimer && el.classList.contains('hidden')) loadingTimer = setTimeout(() => { loadingTimer = null; if (loadingCount > 0) el.classList.remove('hidden'); }, 250);
+  } else {
+    clearTimeout(loadingTimer); loadingTimer = null; el.classList.add('hidden');
+  }
+}

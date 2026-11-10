@@ -91,10 +91,60 @@ function normalizeDateStr(d) {
   return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : s;
 }
 
-// อ่านเอกสาร: ออนไลน์อ่านจากเซิร์ฟเวอร์ ถ้าเน็ตหลุดอ่านจากที่เก็บในเครื่อง
+// อ่านเอกสาร: เปิด "ช่องฟังแบบเรียลไทม์" ครั้งแรกที่อ่าน แล้วเก็บไว้ในหน่วยความจำ
+// ครั้งต่อไป (สลับแถบ/สลับวิชา) ได้ข้อมูลทันทีโดยไม่ต้องรอเซิร์ฟเวอร์
+// และยังเป็นข้อมูลล่าสุดเสมอ เพราะ Firestore ส่งการเปลี่ยนแปลงจากครูคนอื่นมาให้เอง
+const LIVE = new Map();
+const LIVE_MAX = 120;
+function listen(r) {
+  const p = r.path;
+  let e = LIVE.get(p);
+  if (e) { LIVE.delete(p); LIVE.set(p, e); return e; }   // ย้ายไปท้าย (ใช้ล่าสุด)
+  e = { data: null };
+  e.ready = new Promise((resolve, reject) => {
+    let done = false, cached = null, timer = null;
+    const finish = () => { if (!done) { done = true; clearTimeout(timer); resolve(); } };
+    e.unsub = F.onSnapshot(r, { includeMetadataChanges: false }, snap => {
+      e.data = snap.exists() ? snap.data() : null;
+      const fromCache = !!(snap.metadata && snap.metadata.fromCache);
+      if (!fromCache || !navigator.onLine) return finish();
+      // ได้ข้อมูลจากเครื่องก่อน: รอเซิร์ฟเวอร์อีกนิด ถ้าเน็ตช้าใช้ของในเครื่องไปก่อน
+      if (!cached) { cached = true; timer = setTimeout(finish, 2500); }
+    }, err => {
+      LIVE.delete(p);
+      if (!done) { done = true; clearTimeout(timer); reject(err); }
+    });
+  });
+  LIVE.set(p, e);
+  while (LIVE.size > LIVE_MAX) {
+    const [k, old] = LIVE.entries().next().value;
+    try { old.unsub && old.unsub(); } catch (x) {}
+    LIVE.delete(k);
+  }
+  return e;
+}
 async function read(r) {
-  const snap = await F.getDoc(r);
-  return snap.exists() ? snap.data() : null;
+  const e = listen(r);
+  await e.ready;
+  return e.data == null ? null : structuredClone(e.data);
+}
+function stopAllListeners() {
+  LIVE.forEach(e => { try { e.unsub && e.unsub(); } catch (x) {} });
+  LIVE.clear();
+}
+
+// โหลดข้อมูลของวิชาล่วงหน้า (เรียกตอนเลือกวิชา) ให้ทุกแถบเปิดได้ทันที
+export async function prefetchSubject(subjectId) {
+  if (!subjectId || !S.me) return;
+  try {
+    const s = await read(ref('subjects', String(subjectId)));
+    if (!s) return;
+    const id = String(subjectId);
+    [ref('rosters', rosterId(s.semester, s.academic_year, s.level, s.room)),
+     ref('homeroomBook', rosterId(s.semester, s.academic_year, s.level, s.room)),
+     ref('scoreSheets', id), ref('attendanceBook', id), ref('taskBook', id)]
+      .forEach(r => listen(r).ready.catch(() => {}));
+  } catch (e) {}
 }
 
 // เขียน: ออนไลน์รอเซิร์ฟเวอร์ยืนยัน (สูงสุด 10 วินาที)
@@ -126,7 +176,7 @@ export async function login() {
     } else throw e;
   }
 }
-export async function logout() { await F.signOut(auth); S.me = null; }
+export async function logout() { stopAllListeners(); await F.signOut(auth); S.me = null; }
 export function onAuth(cb) { return F.onAuthStateChanged(auth, cb); }
 
 // ตรวจสิทธิ์หลังล็อกอิน คืนค่า { ok, reason }

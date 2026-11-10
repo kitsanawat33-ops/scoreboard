@@ -1,8 +1,8 @@
 /* Service Worker — แคชตัวแอปไว้ในเครื่อง ให้เปิดได้แม้เน็ตหลุด
    ข้อมูลจริงอยู่ใน Firestore (มีแคชของตัวเองใน IndexedDB) จึงไม่ยุ่งกับคำขอไป Firestore/Google login */
-const CACHE = 'scoreboard-fb-v3';
+const CACHE = 'scoreboard-fb-v4';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/api.js', '/fb.js', '/config.js', '/manifest.webmanifest',
-  '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png', '/icons/apple-touch-icon.png'];
+  '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-maskable-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-48.png'];
 const CDN = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'cdnjs.cloudflare.com'];
 
 self.addEventListener('install', e => {

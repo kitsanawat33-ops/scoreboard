@@ -680,20 +680,20 @@ export async function getRoomList(semester, academicYear) {
     count: Object.values(r.students || {}).filter(s => s.status !== 'INACTIVE').length }))
     .sort((a, b) => (a.level + '/' + a.room).localeCompare(b.level + '/' + b.room, 'th', { numeric: true }));
 }
-// รับสอน / เลิกสอน — ครูทำได้กับตัวเอง ผู้ดูแลทำให้ใครก็ได้
+// กำหนดครูผู้สอน — เฉพาะผู้ดูแลระบบ
 export async function assignSubject(subjectId, email, on, name) {
   const e = str(email || S.me.email).toLowerCase();
-  if (e !== S.me.email) requireAdmin();
+  requireAdmin();
   const r = ref('subjects', String(subjectId));
   const patch = { teachers: on ? F.arrayUnion(e) : F.arrayRemove(e) };
   const args = [new F.FieldPath('teachers'), patch.teachers, new F.FieldPath('teacher_names', e), on ? str(name || (e === S.me.email ? S.me.name : e)) : F.deleteField()];
   await commit(F.updateDoc(r, ...args));
   return getSubjectCatalog();
 }
-// เป็น/เลิกเป็นครูประจำชั้น — ครูทำได้กับตัวเอง ผู้ดูแลทำให้ใครก็ได้
+// กำหนดครูประจำชั้น — เฉพาะผู้ดูแลระบบ
 export async function assignHomeroom(key, email, on) {
   const e = str(email || S.me.email).toLowerCase();
-  if (e !== S.me.email) requireAdmin();
+  requireAdmin();
   if (!/^[^|]+\|[^|]+$/.test(str(key))) throw new Error('ห้องไม่ถูกต้อง');
   await commit(F.updateDoc(ref('users', e), { homerooms: on ? F.arrayUnion(str(key)) : F.arrayRemove(str(key)) }));
   if (e === S.me.email) {

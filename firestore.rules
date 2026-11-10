@@ -7,7 +7,7 @@ rules_version = '2';
 //  - ผู้ดูแลระบบ (admin)  : ทำได้ทุกอย่าง
 //  - ครู (teacher)        : เห็น/แก้เฉพาะรายวิชาที่มีชื่อตนใน teachers
 //  - ครูประจำชั้น          : เช็คชื่อประจำชั้นห้องของตน + ดูคะแนนทุกวิชาของห้อง (แก้ไม่ได้)
-//  - ครูเลือกรับสอนวิชา / เลือกห้องประจำชั้นของตัวเองได้ แก้ของคนอื่นไม่ได้
+//  - วิชาที่สอน / ห้องประจำชั้น: ผู้ดูแลระบบกำหนดเท่านั้น
 //  - คนที่ไม่มีชื่อในบุคลากร หรือถูกระงับ : ไม่เห็นอะไรเลย
 // =====================================================================
 
@@ -67,12 +67,8 @@ service cloud.firestore {
       // ผู้ดูแลคนแรกสร้างเอกสารของตนเองได้ครั้งแรก
       allow create: if isAdmin() || (isBootstrap() && uid == email()
                         && request.resource.data.role == 'admin' && request.resource.data.active == true);
-      // ครูเลือกห้องประจำชั้นของตนเองได้ (แก้ได้เฉพาะช่อง homerooms ของตัวเอง)
-      allow update: if isAdmin() || (
-        isStaff() && uid == email()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['homerooms'])
-        && request.resource.data.homerooms is list && request.resource.data.homerooms.size() <= 20
-      );
+      // ห้องประจำชั้น / บทบาท: ผู้ดูแลระบบกำหนดเท่านั้น
+      allow update: if isAdmin();
       allow delete: if isAdmin();
     }
 
@@ -88,21 +84,14 @@ service cloud.firestore {
 
     // ---------- รายวิชา (รวมสัดส่วน องค์ประกอบคะแนน และภาระงาน) ----------
     match /subjects/{subjectId} {
-      // ครูทุกคนเห็นรายการวิชา เพื่อเลือกรับสอนได้เอง (คะแนนยังเห็นเฉพาะครูผู้สอน/ครูประจำชั้น)
+      // ครูทุกคนเห็นข้อมูลรายวิชา (ไม่รวมคะแนน — คะแนนเห็นเฉพาะครูผู้สอน/ครูประจำชั้น)
       allow read: if isStaff();
       // สร้างวิชาใหม่: เฉพาะผู้ดูแล
       allow create: if isAdmin();
       allow update: if isAdmin()
         // ครูผู้สอนแก้วิชาของตนได้ (สัดส่วน องค์ประกอบ ภาระงาน) แต่เปลี่ยนรายชื่อครูไม่ได้
         || (isStaff() && email() in resource.data.teachers
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['teachers', 'teacher_names', 'subject_id', 'semester', 'academic_year', 'level', 'room']))
-        // ครูรับสอน/เลิกสอนได้ — เปลี่ยนได้เฉพาะชื่อตัวเองในรายชื่อครู
-        || (isStaff()
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['teachers', 'teacher_names'])
-            && request.resource.data.teachers.toSet().difference(resource.data.get('teachers', []).toSet())
-                 .union(resource.data.get('teachers', []).toSet().difference(request.resource.data.teachers.toSet()))
-                 .hasOnly([email()])
-            && request.resource.data.get('teacher_names', {}).diff(resource.data.get('teacher_names', {})).affectedKeys().hasOnly([email()]));
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['teachers', 'teacher_names', 'subject_id', 'semester', 'academic_year', 'level', 'room']));
       allow delete: if isAdmin();
     }
 

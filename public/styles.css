@@ -94,7 +94,11 @@ a { color: inherit; text-decoration: none; }
   border-right: 1px solid var(--line-light);
   box-shadow: var(--shadow-sm);
   transition: transform var(--med);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
+.sidebar > * { flex-shrink: 0; }
 
 .brand {
   display: flex;

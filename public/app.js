@@ -156,7 +156,7 @@ async function loadApp(){
     if (viewMode === 'mine' && !state.subjects.length && !myHomerooms().length && !loadApp.welcomed) {
       loadApp.welcomed = true;
       showPage('mywork');
-      toast('ยินดีต้อนรับ! เลือกวิชาที่คุณสอนและห้องประจำชั้นก่อนเริ่มใช้งาน');
+      toast('ยังไม่มีวิชาที่สอนหรือห้องประจำชั้น — กรุณาแจ้งผู้ดูแลระบบให้กำหนดงานสอนให้');
     }
   }catch(e){ console.error(e); }
 }
@@ -895,7 +895,7 @@ let asg = null;   // { email, name, self, catalog, rooms, homerooms:Set, box:'mw
 
 async function loadMyWork(){
   const me = state.me || {};
-  asg = { email: me.email, name: me.name, self: true, box: 'mw', catalog: [], rooms: [], homerooms: new Set(myHomerooms()) };
+  asg = { email: me.email, name: me.name, self: true, readonly: true, box: 'mw', catalog: [], rooms: [], homerooms: new Set(myHomerooms()) };
   document.getElementById('mwSubjects').innerHTML = '<div class="empty">กำลังโหลด...</div>';
   try {
     const [catalog, rooms] = await Promise.all([gas('getSubjectCatalog', state.currentSemester, state.currentYear), API.getRoomList(state.currentSemester, state.currentYear)]);
@@ -911,6 +911,12 @@ function renderAssign(){
   const p = asg.box;
   const roomsBox = document.getElementById(p + 'Rooms'), subBox = document.getElementById(p + 'Subjects');
   if (!roomsBox || !subBox) return;
+  if (asg.readonly) {
+    const mineRooms = asg.rooms.filter(r => asg.homerooms.has(r.key));
+    roomsBox.innerHTML = mineRooms.length
+      ? mineRooms.map(r => `<div class="room-pick on"><b>${esc(r.level)}/${esc(r.room)}</b><small>${r.count} คน</small><i>✓ ประจำชั้น</i></div>`).join('')
+      : '<div class="empty">ยังไม่ได้เป็นครูประจำชั้น</div>';
+  } else
   roomsBox.innerHTML = asg.rooms.length ? asg.rooms.map(r => {
     const on = asg.homerooms.has(r.key);
     return `<button class="room-pick${on ? ' on' : ''}" onclick="toggleRoomAssign('${esc(r.key)}')"><b>${esc(r.level)}/${esc(r.room)}</b><small>${r.count} คน</small>${on ? '<i>✓ ประจำชั้น</i>' : ''}</button>`;
@@ -920,12 +926,13 @@ function renderAssign(){
   const f = document.getElementById(p + 'Filter')?.value || 'all';
   const list = asg.catalog.filter(s => {
     const mine = s.teachers.includes(asg.email);
+    if (asg.readonly && !mine) return false;
     if (f === 'mine' && !mine) return false;
     if (f === 'free' && s.teachers.length) return false;
     return !q || `${s.subject_code} ${s.subject_name} ${s.level}/${s.room}`.toLowerCase().includes(q);
   });
   const mineCount = asg.catalog.filter(s => s.teachers.includes(asg.email)).length;
-  if (!asg.catalog.length) { subBox.innerHTML = '<div class="empty">ยังไม่มีรายวิชาในภาคเรียนนี้ — ผู้ดูแลระบบนำเข้าได้ที่เมนู "นำเข้า / ส่งออกข้อมูล"</div>'; return; }
+  if (!asg.catalog.length || (asg.readonly && !mineCount)) { subBox.innerHTML = `<div class="empty">${asg.readonly ? 'ยังไม่มีวิชาที่สอนในภาคเรียนนี้ — ผู้ดูแลระบบเป็นผู้กำหนดวิชาให้' : 'ยังไม่มีรายวิชาในภาคเรียนนี้ — นำเข้าได้ที่เมนู "นำเข้า / ส่งออกข้อมูล"'}</div>`; return; }
   const groups = {};
   list.forEach(s => (groups[`${s.level}/${s.room}`] = groups[`${s.level}/${s.room}`] || []).push(s));
   subBox.innerHTML = `<p class="mw-count">${asg.self ? 'คุณ' : esc(asg.name || asg.email)} สอนอยู่ <b>${mineCount}</b> วิชา</p>` + (Object.keys(groups).length ? Object.keys(groups).map(k => `
@@ -936,7 +943,7 @@ function renderAssign(){
       return `<div class="mw-sub${mine ? ' on' : ''}">
         <div class="mw-sub-main"><b>${esc(s.subject_code || '')} ${esc(s.subject_name)}</b>
           <small>${s.credit ? s.credit + ' นก. • ' : ''}${others.length ? 'ครู: ' + others.map(e => esc(tName(s, e))).join(', ') : (mine ? '' : '<span class="mw-free">ยังไม่มีครู</span>')}</small></div>
-        <button class="mw-btn${mine ? ' on' : ''}" onclick="toggleSubjectAssign('${esc(s.subject_id)}')">${mine ? '✓ สอนอยู่' : '+ รับสอน'}</button>
+        ${asg.readonly ? '' : `<button class="mw-btn${mine ? ' on' : ''}" onclick="toggleSubjectAssign('${esc(s.subject_id)}')">${mine ? '✓ สอนอยู่' : '+ รับสอน'}</button>`}
       </div>`; }).join('')}</div>`).join('') : '<div class="empty">ไม่พบวิชาตามเงื่อนไข</div>');
 }
 

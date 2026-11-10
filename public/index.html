@@ -479,17 +479,15 @@
       </section>
       <section id="page-mywork" class="page">
         <div class="toolbar">
-          <div><h2>งานสอนของฉัน</h2><p>เลือกวิชาที่คุณสอนและห้องที่คุณเป็นครูประจำชั้น ระบบจะแสดงเฉพาะงานของคุณในหน้าเช็คชื่อ บันทึกคะแนน และเช็คงาน</p></div>
+          <div><h2>งานสอนของฉัน</h2><p>วิชาที่สอนและห้องประจำชั้นของคุณในภาคเรียนนี้ • ผู้ดูแลระบบเป็นผู้กำหนด หากไม่ถูกต้องกรุณาแจ้งผู้ดูแลระบบ</p></div>
         </div>
         <div class="panel">
-          <div class="mw-head"><div><h3>ห้องประจำชั้น</h3><p>กดเลือกห้องที่คุณเป็นครูประจำชั้น • 1 ห้องมีครูประจำชั้นได้หลายคน</p></div></div>
+          <div class="mw-head"><div><h3>ห้องประจำชั้น</h3></div></div>
           <div id="mwRooms" class="room-grid"></div>
         </div>
         <div class="panel">
           <div class="mw-head">
-            <div><h3>วิชาที่สอน</h3><p>กด "รับสอน" วิชาที่คุณสอน • ไม่พบวิชาของคุณ แจ้งผู้ดูแลระบบให้เพิ่มวิชา</p></div>
-            <div class="mw-tools"><input id="mwSearch" placeholder="🔍 ค้นหารหัส / ชื่อวิชา" oninput="renderAssign()">
-              <select id="mwFilter" onchange="renderAssign()"><option value="all">ทุกวิชา</option><option value="mine">เฉพาะที่ฉันสอน</option><option value="free">ยังไม่มีครู</option></select></div>
+            <div><h3>วิชาที่สอน</h3></div>
           </div>
           <div id="mwSubjects"></div>
         </div>
@@ -507,7 +505,7 @@
 
       <section id="page-users" class="page">
         <div class="toolbar">
-          <div><h2>บุคลากร / ภาระงาน</h2><p>เพิ่มอีเมลครูเพื่อให้เข้าระบบได้ • ครูเลือกวิชาที่สอนและห้องประจำชั้นได้เองที่เมนู "งานสอนของฉัน" หรือผู้ดูแลกด "จัดงาน" ให้ก็ได้</p></div>
+          <div><h2>บุคลากร / ภาระงาน</h2><p>เพิ่มอีเมลครูเพื่อให้เข้าระบบได้ • กด "จัดงาน" เพื่อกำหนดวิชาที่สอนและห้องประจำชั้นให้ครูแต่ละคน (ครูแก้เองไม่ได้)</p></div>
           <div class="toolbar-actions"><button class="primary" onclick="openUserModal()">+ เพิ่มบุคลากร</button></div>
         </div>
         <div id="unassignedBox"></div>

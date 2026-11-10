@@ -908,3 +908,10 @@ nav .nav-label:first-child { padding-top: 2px; }
 .mw-btn.on:hover::after { content: ' • เลิกสอน'; }
 
 @media (max-width: 640px) { .room-grid { grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 6px; } .room-pick { padding: 8px 9px; } }
+
+.pt-list { max-height: 52vh; overflow: auto; border: 1px solid var(--line-light); border-radius: 12px; }
+.pt-row { display: grid; grid-template-columns: 1fr 240px; gap: 10px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line-light); }
+.pt-row:last-child { border-bottom: 0; }
+.pt-row small { display: block; color: var(--ink-soft); font-size: 12px; }
+.pt-row input { min-height: 0; padding: 7px 10px; }
+@media (max-width: 640px) { .pt-row { grid-template-columns: 1fr; } }

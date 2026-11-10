@@ -450,17 +450,11 @@ async function termRosters(sem, yr) {
 export async function getStudents(semester, academicYear) {
   const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
   const rosters = await termRosters(sem, yr);
-  const secrets = {};
-  if (isAdmin()) {
-    await Promise.all(rosters.map(async r => {
-      try { const s = await read(ref('rosterSecrets', r._id)); secrets[r._id] = (s && s.citizen) || {}; } catch (e) { secrets[r._id] = {}; }
-    }));
-  }
   const out = [];
   rosters.forEach(r => {
     Object.values(r.students || {}).forEach(s => {
       out.push({
-        student_id: String(s.student_id), citizen_id: (secrets[r._id] || {})[s.student_id] || '', prefix: s.prefix || '',
+        student_id: String(s.student_id), prefix: s.prefix || '',
         first_name: s.first_name, last_name: s.last_name, class_level: r.level, room: r.room,
         semester: sem, academic_year: yr, status: s.status || 'ACTIVE'
       });
@@ -484,8 +478,7 @@ async function upsertStudents(records) {
   records.forEach(r => {
     const id = rosterId(r.semester, r.academic_year, r.class_level, r.room);
     (groups[id] = groups[id] || { meta: r, students: {}, citizen: {} });
-    groups[id].students[r.student_id] = { student_id: r.student_id, first_name: r.first_name, last_name: r.last_name, status: r.status || 'ACTIVE' };
-    if (r.citizen_id) groups[id].citizen[r.student_id] = r.citizen_id;
+    groups[id].students[r.student_id] = { student_id: r.student_id, prefix: str(r.prefix), first_name: r.first_name, last_name: r.last_name, status: r.status || 'ACTIVE' };
   });
   const batch = F.writeBatch(db);
   Object.entries(groups).forEach(([id, g]) => {
@@ -530,7 +523,7 @@ export async function importStudents(rows, classLevel, room, semester, academicY
   rows.slice(1).forEach(r => {
     const sid = str(r[c.studentId]); if (!sid) return;
     records.push({
-      student_id: sid, citizen_id: c.citizenId >= 0 ? str(r[c.citizenId]) : '',
+      student_id: sid,
       first_name: str(r[c.firstName]), last_name: str(r[c.lastName]),
       class_level: str(classLevel || 'ม.5'), room: str(room || '1'), semester: sem, academic_year: yr, status: 'ACTIVE'
     });
@@ -598,7 +591,7 @@ export async function saveStudent(student) {
   requireAdmin();
   ['student_id', 'first_name', 'last_name'].forEach(k => { if (!str(student[k])) throw new Error(`กรุณากรอก ${k}`); });
   const rec = {
-    student_id: str(student.student_id), citizen_id: str(student.citizen_id),
+    student_id: str(student.student_id), prefix: str(student.prefix),
     first_name: str(student.first_name), last_name: str(student.last_name),
     class_level: str(student.class_level || 'ม.5'), room: str(student.room || '1'),
     semester: str(student.semester || S.term.sem), academic_year: str(student.academic_year || S.term.yr),
@@ -671,7 +664,7 @@ export async function getSubjectCatalog(semester, academicYear) {
   const q = F.query(F.collection(db, 'subjects'), F.where('semester', '==', sem), F.where('academic_year', '==', yr));
   const docs = (await F.getDocs(q)).docs.map(d => d.data()).filter(s => s.status !== 'INACTIVE');
   return docs.map(s => ({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, level: s.level, room: s.room,
-    teachers: s.teachers || [], teacher_names: s.teacher_names || {}, credit: (s.config || {}).credit })).sort(subjectSort);
+    teachers: s.teachers || [], teacher_names: s.teacher_names || {}, planned_teacher: s.planned_teacher || '', credit: (s.config || {}).credit })).sort(subjectSort);
 }
 export async function getRoomList(semester, academicYear) {
   const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
@@ -703,6 +696,29 @@ export async function assignHomeroom(key, email, on) {
   }
   return { homerooms: e === S.me.email ? S.me.homerooms : null };
 }
+// ผูกวิชากับครูตามชื่อในตารางสอน (planned_teacher) เมื่อครูคนนั้นมีอีเมลในระบบแล้ว
+const PREFIX_RE = /^(นางสาว|นาง|นาย|น\.ส\.|ว่าที่\s*ร\.?\s*ต\.?\s*(หญิง)?|ว่าที่ร้อยตรี(หญิง)?|ดร\.|ครู)\s*/;
+function nname(n) { let x = str(n); for (let i = 0; i < 3; i++) x = x.replace(PREFIX_RE, ''); return x.replace(/\s+/g, ''); }
+export async function linkPlannedTeachers(semester, academicYear) {
+  requireAdmin();
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  const [users, catalog] = await Promise.all([getUsers(), getSubjectCatalog(sem, yr)]);
+  const byName = {};
+  users.filter(u => u.active !== false).forEach(u => { const k = nname(u.name); if (k) byName[k] = u; });
+  const ops = [];
+  catalog.forEach(s => {
+    const u = s.planned_teacher && byName[nname(s.planned_teacher)];
+    if (!u || (s.teachers || []).includes(u.email)) return;
+    ops.push([ref('subjects', s.subject_id), u]);
+  });
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = F.writeBatch(db);
+    ops.slice(i, i + 400).forEach(([r, u]) => batch.update(r, new F.FieldPath('teachers'), F.arrayUnion(u.email), new F.FieldPath('teacher_names', u.email), u.name || u.email));
+    await commit(batch.commit());
+  }
+  return { linked: ops.length };
+}
+
 // ภาพรวมภาระงานครู (ผู้ดูแล)
 export async function getWorkload(semester, academicYear) {
   requireAdmin();
@@ -781,6 +797,7 @@ export async function importSubjects(list, opts = {}) {
     if (prev) {
       if (!opts.update) { skipped++; return; }
       const patch = { updated_at: nowIso() };
+      if (str(x.planned_teacher)) patch.planned_teacher = str(x.planned_teacher);
       if (credit) patch.config = Object.assign({}, prev.config || {}, { credit });
       if (teachers.length) patch.teachers = [...new Set([...(prev.teachers || []), ...teachers])];
       if (teachers.length) patch.teacher_names = Object.assign({}, prev.teacher_names || {}, x.teacher_names || {});
@@ -792,7 +809,7 @@ export async function importSubjects(list, opts = {}) {
     const id = uid(10);
     const doc = Object.assign({ config: Object.assign(defaultConfig(), credit ? { credit } : {}), items: {}, tasks: {} }, rec, {
       subject_id: id, semester: sem, academic_year: yr, max_score: 100, status: 'ACTIVE',
-      teachers, teacher_names: x.teacher_names || {}, updated_at: nowIso(), source: 'timetable'
+      teachers, teacher_names: x.teacher_names || {}, planned_teacher: str(x.planned_teacher), updated_at: nowIso(), source: 'timetable'
     });
     ops.push([ref('subjects', id), doc, false]);
     have.set(key(rec), doc);
@@ -803,7 +820,10 @@ export async function importSubjects(list, opts = {}) {
     ops.slice(i, i + 400).forEach(([r, d, merge]) => merge ? batch.set(r, d, { merge: true }) : batch.set(r, d));
     await commit(batch.commit());
   }
-  return { ok: true, created, updated, skipped, subjects: await getSubjects(sem, yr) };
+  const terms = registeredTerms();
+  if (!terms.includes(`${sem}/${yr}`)) await saveTerms([...terms, `${sem}/${yr}`]);
+  try { await linkPlannedTeachers(sem, yr); } catch (e) {}
+  return { ok: true, created, updated, skipped, registeredTerms: registeredTerms(), subjects: await getSubjects(sem, yr) };
 }
 
 export async function deleteSubject(subjectId, semester, academicYear) {
@@ -1425,7 +1445,6 @@ export async function importLegacyWorkbook(sheets, opts = {}) {
       rosters[id] = rosters[id] || { semester: s, academic_year: y, level: str(r.class_level), room: str(r.room), students: {} };
       if (!rosters[id].students[sid]) stuCount++;
       rosters[id].students[sid] = { student_id: sid, first_name: str(r.first_name), last_name: str(r.last_name), status: 'ACTIVE' };
-      if (str(r.citizen_id)) { secrets[id] = secrets[id] || {}; secrets[id][sid] = str(r.citizen_id); }
     });
   });
   log.push(`นักเรียน ${stuCount} รายการ ใน ${Object.keys(rosters).length} ห้อง` + (stuSkipped ? ` (ข้ามแถวที่ข้อมูลไม่สมบูรณ์ ${stuSkipped} แถว)` : ''));

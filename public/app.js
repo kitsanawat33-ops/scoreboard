@@ -860,6 +860,39 @@ function renderUsers(){
       <td style="white-space:nowrap"><button class="small-btn" onclick="openAssignModal('${esc(u.email)}')">จัดงาน</button> <button class="small-btn" onclick="openUserModal('${esc(u.email)}')">แก้ไข</button></td></tr>`).join('') + '</tbody>';
   renderUnassigned();
 }
+// เพิ่มครูจากชื่อในตารางสอน: กรอกอีเมลทีละคน แล้วผูกวิชาให้อัตโนมัติ
+function plannedTeacherNames(){
+  const known = new Set(usersCache.map(u => normName(u.name)));
+  const map = {};
+  workloadCatalog.forEach(s => { if (s.planned_teacher && !known.has(normName(s.planned_teacher))) (map[s.planned_teacher] = map[s.planned_teacher] || []).push(s); });
+  return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], 'th'));
+}
+function openPlannedTeachersModal(){
+  const list = plannedTeacherNames();
+  document.getElementById('modalTitle').textContent = 'เพิ่มครูจากตารางสอน';
+  document.getElementById('modalBody').innerHTML = list.length ? `
+    <div class="info-box">กรอกอีเมล Google ของครูแต่ละคน (เว้นว่างได้ถ้ายังไม่ทราบ) เมื่อบันทึก ระบบจะเพิ่มครูเข้าระบบและผูกวิชาตามตารางสอนให้อัตโนมัติ</div>
+    <div class="pt-list">${list.map(([name, subs], i) => `<div class="pt-row">
+      <div><b>${esc(name)}</b><small>${subs.length} วิชา: ${esc(subs.slice(0, 4).map(s => `${s.subject_name} ${s.level}/${s.room}`).join(', '))}${subs.length > 4 ? ' …' : ''}</small></div>
+      <input id="pt_${i}" type="email" placeholder="name@ppj.ac.th" data-name="${esc(name)}"></div>`).join('')}</div>
+    <div class="modal-actions"><button class="secondary" onclick="closeModal()">ยกเลิก</button><button class="primary" onclick="savePlannedTeachers()">บันทึก</button></div>`
+    : `<div class="empty">ครูทุกคนในตารางสอนของภาคเรียนนี้มีอีเมลในระบบแล้ว</div><div class="modal-actions"><button class="primary" onclick="closeModal()">ปิด</button></div>`;
+  openModal();
+}
+async function savePlannedTeachers(){
+  const rows = [...document.querySelectorAll('.pt-row input')].map(i => ({ email: i.value.trim().toLowerCase(), name: i.dataset.name })).filter(r => r.email);
+  if (!rows.length) return toast('ยังไม่ได้กรอกอีเมล', 'error');
+  const bad = rows.find(r => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r.email));
+  if (bad) return toast(`อีเมลไม่ถูกต้อง: ${bad.email}`, 'error');
+  for (const r of rows) {
+    await gas('saveUser', { email: r.email, name: r.name, role: 'teacher', active: true, homerooms: [] });
+  }
+  const res = await gas('linkPlannedTeachers', state.currentSemester, state.currentYear);
+  closeModal(); await loadUsersPage();
+  state.subjects = await API.getSubjects(state.currentSemester, state.currentYear); renderSubjects(); fillSubjectSelects();
+  toast(`เพิ่มครู ${rows.length} คน • ผูกวิชาตามตารางสอน ${res.linked} วิชา`);
+}
+
 function renderUnassigned(){
   const box = document.getElementById('unassignedBox'); if (!box) return;
   const free = workloadCatalog.filter(s => !(s.teachers||[]).length);
@@ -868,9 +901,10 @@ function renderUnassigned(){
   box.innerHTML = `<div class="panel">
     <div class="mw-head"><div><h3>${free.length ? `⚠️ วิชาที่ยังไม่มีครู ${free.length} วิชา` : '✅ ทุกวิชามีครูผู้สอนแล้ว'}</h3>
       <p>ภาคเรียน ${esc(state.currentSemester)}/${esc(state.currentYear)} • ทั้งหมด ${workloadCatalog.length} วิชา</p></div>
-      ${free.length ? `<button class="secondary" onclick="this.closest('.panel').classList.toggle('open')">แสดง / ซ่อน</button>` : ''}</div>
+      <div class="mw-tools">${plannedTeacherNames().length ? `<button class="primary" onclick="openPlannedTeachersModal()">👥 เพิ่มครูจากตารางสอน (${plannedTeacherNames().length})</button>` : ''}
+      ${free.length ? `<button class="secondary" onclick="this.closest('.panel').classList.toggle('open')">แสดง / ซ่อน</button>` : ''}</div></div>
     ${free.length ? `<div class="unassigned-list">${free.map(s => `<div class="ua-row">
-      <span><b>${esc(s.level)}/${esc(s.room)}</b> ${esc(s.subject_code||'')} ${esc(s.subject_name)}</span>
+      <span><b>${esc(s.level)}/${esc(s.room)}</b> ${esc(s.subject_code||'')} ${esc(s.subject_name)}${s.planned_teacher ? ` <small style="color:var(--ink-soft)">• ตามตาราง: ${esc(s.planned_teacher)}</small>` : ''}</span>
       <select onchange="quickAssign('${esc(s.subject_id)}', this.value)"><option value="">— เลือกครู —</option>${teachers.map(u => `<option value="${esc(u.email)}">${esc(u.name || u.email)}</option>`).join('')}</select>
     </div>`).join('')}</div>` : ''}
   </div>`;
@@ -1049,7 +1083,10 @@ async function saveUserForm(){
   const email = v('u_email').trim();
   if(!email) return toast('กรุณากรอกอีเมล','error');
   usersCache = await gas('saveUser', { email, name: v('u_name'), role: v('u_role'), active: v('u_active') === '1', homerooms: v('u_homerooms') });
-  closeModal(); renderUsers(); renderSubjects(); toast('บันทึกบุคลากรแล้ว');
+  let linked = 0;
+  try { linked = (await API.linkPlannedTeachers(state.currentSemester, state.currentYear)).linked; } catch (e) {}
+  closeModal(); await loadUsersPage();
+  state.subjects = await API.getSubjects(state.currentSemester, state.currentYear); renderSubjects(); fillSubjectSelects(); toast('บันทึกบุคลากรแล้ว' + (linked ? ` • ผูกวิชาตามตารางสอน ${linked} วิชา` : ''));
 }
 async function removeUser(email){
   if(!confirm(`ยืนยันลบ ${email} ออกจากระบบ? (เข้าระบบไม่ได้อีก)`)) return;
@@ -1683,12 +1720,12 @@ function renderStudents(){
   if (!table) return;
 
   if (active.length === 0) {
-    table.innerHTML = '<thead><tr><th>รหัส</th><th>เลขประชาชน</th><th>ชื่อ–สกุล</th><th>ชั้น</th><th>ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th></th></tr></thead><tbody><tr><td colspan="8" class="empty">ยังไม่มีข้อมูลนักเรียนในภาคเรียนนี้</td></tr></tbody>';
+    table.innerHTML = '<thead><tr><th>รหัส</th><th>คำนำหน้า</th><th>ชื่อ–สกุล</th><th>ชั้น</th><th>ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th></th></tr></thead><tbody><tr><td colspan="8" class="empty">ยังไม่มีข้อมูลนักเรียนในภาคเรียนนี้</td></tr></tbody>';
     return;
   }
 
-  table.innerHTML='<thead><tr><th>รหัส</th><th>เลขประชาชน</th><th>ชื่อ–สกุล</th><th>ชั้น</th><th>ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th></th></tr></thead><tbody>'+
-    active.map(s=>`<tr><td>${esc(s.student_id)}</td><td>${maskCitizen(s.citizen_id)}</td><td>${esc(s.first_name)} ${esc(s.last_name)}</td><td>${esc(s.class_level)}</td><td>${esc(s.room)}</td><td>${esc(s.semester||state.currentSemester)}</td><td>${esc(s.academic_year||state.currentYear)}</td><td>${isAdminUI()?`<button class="small-btn" onclick='openStudentModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeStudent('${esc(s.student_id)}')">ลบ</button>`:''}</td></tr>`).join('')+'</tbody>';
+  table.innerHTML='<thead><tr><th>รหัส</th><th>คำนำหน้า</th><th>ชื่อ–สกุล</th><th>ชั้น</th><th>ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th></th></tr></thead><tbody>'+
+    active.map(s=>`<tr><td>${esc(s.student_id)}</td><td>${esc(s.prefix||'')}</td><td>${esc(s.first_name)} ${esc(s.last_name)}</td><td>${esc(s.class_level)}</td><td>${esc(s.room)}</td><td>${esc(s.semester||state.currentSemester)}</td><td>${esc(s.academic_year||state.currentYear)}</td><td>${isAdminUI()?`<button class="small-btn" onclick='openStudentModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeStudent('${esc(s.student_id)}')">ลบ</button>`:''}</td></tr>`).join('')+'</tbody>';
 }
 
 function renderSubjects(){
@@ -1700,7 +1737,7 @@ function renderSubjects(){
 
   if(!active.length){document.getElementById('subjectsTable').innerHTML='<tbody><tr><td class="empty">ยังไม่มีรายวิชาในภาคเรียนนี้ — กด "+ เพิ่มวิชา"</td></tr></tbody>';return;}
   document.getElementById('subjectsTable').innerHTML='<thead><tr><th>รหัสวิชา</th><th>ชื่อวิชา</th><th>ชั้น/ห้อง</th><th>ภาคเรียน</th><th>ปี</th><th>คะแนนเต็ม</th><th>ครูผู้สอน</th><th></th></tr></thead><tbody>'+
-    active.map(s=>`<tr><td>${esc(s.subject_code||s.subject_id)}</td><td>${esc(s.subject_name)}</td><td>${esc(s.level)}/${esc(s.room)}</td><td>${esc(s.semester)}</td><td>${esc(s.academic_year)}</td><td>${s.max_score}</td><td style="white-space:normal;max-width:260px;font-size:12px">${(s.teachers||[]).map(e=>esc(teacherName(e))).join(', ')}</td><td><button class="small-btn" onclick='openSubjectModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeSubject('${esc(s.subject_id)}')">ลบ</button></td></tr>`).join('')+'</tbody>';
+    active.map(s=>`<tr><td>${esc(s.subject_code||s.subject_id)}</td><td>${esc(s.subject_name)}</td><td>${esc(s.level)}/${esc(s.room)}</td><td>${esc(s.semester)}</td><td>${esc(s.academic_year)}</td><td>${s.max_score}</td><td style="white-space:normal;max-width:260px;font-size:12px">${(s.teachers||[]).length ? s.teachers.map(e=>esc(teacherName(e))).join(', ') : (s.planned_teacher ? `<span style="color:var(--ink-soft)">${esc(s.planned_teacher)}</span> <span class="ii-note" style="display:inline">ยังไม่มีอีเมล</span>` : '<span style="color:var(--ink-faint)">-</span>')}</td><td><button class="small-btn" onclick='openSubjectModal(${JSON.stringify(s).replace(/'/g,"&#39;")})'>แก้ไข</button> <button class="danger" onclick="removeSubject('${esc(s.subject_id)}')">ลบ</button></td></tr>`).join('')+'</tbody>';
 }
 
 async function renderItems(){
@@ -1727,7 +1764,7 @@ function openStudentModal(s={}){
   document.getElementById('modalTitle').textContent=s.student_id?'แก้ไขนักเรียน':'เพิ่มนักเรียน';
   document.getElementById('modalBody').innerHTML=`<div class="form-grid">
   <div class="form-row"><label>รหัสนักเรียน *</label><input id="m_student_id" value="${esc(s.student_id||'')}"></div>
-  <div class="form-row"><label>เลขประชาชน</label><input id="m_citizen_id" value="${esc(s.citizen_id||'')}"></div>
+  <div class="form-row"><label>คำนำหน้า</label><input id="m_prefix" list="prefixList" value="${esc(s.prefix||'')}" placeholder="เด็กชาย / เด็กหญิง / นาย / นางสาว"><datalist id="prefixList"><option value="เด็กชาย"><option value="เด็กหญิง"><option value="นาย"><option value="นางสาว"></datalist></div>
   <div class="form-row"><label>ชื่อ *</label><input id="m_first_name" value="${esc(s.first_name||'')}"></div>
   <div class="form-row"><label>นามสกุล *</label><input id="m_last_name" value="${esc(s.last_name||'')}"></div>
   <div class="form-row"><label>ชั้น</label><input id="m_level" value="${esc(s.class_level||'ม.5')}"></div>
@@ -1743,7 +1780,7 @@ async function saveStudentForm(){
   const yr = v('m_stu_year') || state.currentYear || '2569';
   state.students = await gas('saveStudent',{
     student_id: v('m_student_id'),
-    citizen_id: v('m_citizen_id'),
+    prefix: v('m_prefix'),
     first_name: v('m_first_name'),
     last_name: v('m_last_name'),
     class_level: v('m_level'),
@@ -1814,7 +1851,7 @@ function normName(n){ let x = String(n || '').trim(); for (let i = 0; i < 3; i++
 
 async function openSubjectImportModal(){
   if (!isAdminUI()) return toast('ทำได้เฉพาะผู้ดูแลระบบ', 'error');
-  tt = null; ttRows = [];
+  tt = null; ttRows = []; ttExistingFor = null; ttLoading = null;
   if (!usersCache.length) { try { usersCache = await API.getUsers(); } catch (e) {} }
   document.getElementById('modalTitle').textContent = `นำเข้ารายวิชา • ภาคเรียน ${state.currentSemester}/${state.currentYear}`;
   document.getElementById('modalBody').innerHTML = `
@@ -1822,7 +1859,10 @@ async function openSubjectImportModal(){
       และจับคู่ครูผู้สอนกับรายชื่อในเมนู "บุคลากร / สิทธิ์" ด้วยชื่อ-สกุล<br>
       วิชาที่มีอยู่แล้ว (รหัส ชื่อ ชั้น ห้องเดียวกัน) จะไม่ถูกสร้างซ้ำ และคะแนนเดิมไม่ถูกแตะต้อง</div>
     <div class="form-row"><label>เลือกไฟล์ (.json)</label><input type="file" id="ttFile" accept=".json,application/json" onchange="readTimetableFile()"></div>
-    <div id="ttTermRow" class="form-row" style="display:none"><label>ภาคเรียนในไฟล์</label><select id="ttTerm" onchange="buildTimetableRows()"></select></div>
+    <div id="ttTermRow" class="form-grid" style="display:none">
+      <div class="form-row"><label>ภาคเรียนในไฟล์</label><select id="ttTerm" onchange="ttSyncTarget();buildTimetableRows()"></select></div>
+      <div class="form-row"><label>นำเข้าไปที่ภาคเรียน</label><select id="ttTarget" onchange="buildTimetableRows()"></select></div>
+    </div>
     <div id="ttPreview"></div>
     <div class="import-opts">
       <label><input type="checkbox" id="tt_update" checked> วิชาที่มีอยู่แล้ว: อัปเดตหน่วยกิตและครูผู้สอน (ถ้าจับคู่ครูได้)</label>
@@ -1847,20 +1887,35 @@ async function readTimetableFile(){
     sel.innerHTML = terms.map(t => `<option value="${esc(t.id)}">${esc(t.label || t.id)} (${d.subjects.filter(s => s.termId === t.id).length} วิชา)</option>`).join('');
     sel.value = terms.some(t => t.id === cur) ? cur : terms[terms.length - 1].id;
     document.getElementById('ttTermRow').style.display = '';
+    ttSyncTarget();
     buildTimetableRows();
   } catch (e) {
     document.getElementById('ttPreview').innerHTML = `<div class="empty">อ่านไฟล์ไม่สำเร็จ: ${esc(e.message || e)}</div>`;
   }
 }
 
+let ttExistingList = [], ttExistingFor = null, ttLoading = null;
+function ttTargetTerm(){ const [sem, yr] = (v('ttTarget') || `${state.currentSemester}/${state.currentYear}`).split('/'); return { sem, yr }; }
+function ttSyncTarget(){
+  const [yr, sem] = v('ttTerm').split('-');
+  const fileTerm = `${sem}/${yr}`;
+  const terms = Array.from(new Set([...(state.registeredTerms || []), fileTerm, `${state.currentSemester}/${state.currentYear}`])).sort((a, b) => b.localeCompare(a));
+  const sel = document.getElementById('ttTarget');
+  sel.innerHTML = terms.map(t => `<option value="${t}">ภาคเรียน ${t}${t === fileTerm ? ' (ตามไฟล์)' : ''}${(state.registeredTerms || []).includes(t) ? '' : ' • ใหม่'}</option>`).join('');
+  sel.value = fileTerm;
+}
+async function ttExisting(){
+  const t = ttTargetTerm();
+  if (t.sem === String(state.currentSemester) && t.yr === String(state.currentYear) && isAdminUI()) return state.subjects;
+  try { return await API.getSubjectCatalog(t.sem, t.yr); } catch (e) { return []; }
+}
 function buildTimetableRows(){
   const termId = v('ttTerm');
   const teachers = {};
   (tt.teachers || []).forEach(t => { teachers[t.id] = t; });
   const byName = {};
   usersCache.filter(u => u.active !== false).forEach(u => { const k = normName(u.name); if (k) byName[k] = u.email; });
-  const [yr, sem] = termId.split('-');
-  const existing = new Set(state.subjects.filter(s => s.status !== 'INACTIVE' && String(s.semester) === String(state.currentSemester) && String(s.academic_year) === String(state.currentYear))
+  const existing = new Set((ttExistingFor === v('ttTarget') ? ttExistingList : []).filter(s => s.status !== 'INACTIVE')
     .map(s => [s.subject_code, s.subject_name, s.level, s.room].map(x => String(x || '').trim()).join('|')));
   ttRows = [];
   tt.subjects.filter(s => s.termId === termId).sort((a, b) => (a.level - b.level) || ((a.order || 0) - (b.order || 0))).forEach(s => {
@@ -1869,16 +1924,21 @@ function buildTimetableRows(){
     if (!rooms.length) rooms = Array.from({ length: Number(s.rooms) || 1 }, (_, i) => i + 1);
     rooms.forEach(r => {
       const t = teachers[s['room' + r]];
-      const tName = t ? `${t.prefix || ''}${t.firstName || ''} ${t.lastName || ''}`.trim() : '';
       const email = t ? byName[normName(`${t.firstName || ''}${t.lastName || ''}`)] : '';
       const row = { level, room: String(r), code: String(s.code || '').trim(), name: String(s.name || '').trim(), credit: Number(s.unit) || 0,
-        teacherName: tName, email: email || '', note: s.combine ? `เรียนรวมห้อง ${s.combine}` : (s.note === 'วิทย์' ? 'สายวิทย์' : s.note === 'ศิลป์' ? 'สายศิลป์' : (s.note || '')) };
+        teacherName: t ? `${t.prefix || ''}${t.firstName || ''} ${t.lastName || ''}`.trim() : '', email: email || '', note: s.combine ? `เรียนรวมห้อง ${s.combine}` : (s.note === 'วิทย์' ? 'สายวิทย์' : s.note === 'ศิลป์' ? 'สายศิลป์' : (s.note || '')) };
       row.exists = existing.has([row.code, row.name, row.level, row.room].join('|'));
       row.selected = true;
       ttRows.push(row);
     });
   });
   renderTimetablePreview();
+  // โหลดวิชาที่มีอยู่แล้วของภาคเรียนปลายทาง แล้วคำนวณใหม่ (ครั้งเดียวต่อการเปลี่ยนภาคเรียน)
+  const tk = v('ttTarget');
+  if (ttExistingFor !== tk && ttLoading !== tk) {
+    ttLoading = tk;
+    ttExisting().then(list => { ttExistingList = list; ttExistingFor = tk; ttLoading = null; if (v('ttTarget') === tk) buildTimetableRows(); });
+  }
 }
 
 function renderTimetablePreview(){
@@ -1907,15 +1967,13 @@ function renderTimetablePreview(){
           <label class="tt-sub">
             <input type="checkbox" ${r.selected ? 'checked' : ''} onchange="ttRows[${i}].selected=this.checked;renderTimetablePreview()">
             <span class="ii-main">${esc(r.code)} ${esc(r.name)} <small>${r.credit} นก.${r.note ? ' • ' + esc(r.note) : ''}</small>
-              <small class="${r.email ? 'tt-ok' : 'ii-note'}">${r.email ? '👤 ' + esc(teacherName(r.email)) : (r.teacherName ? '⚠️ ' + esc(r.teacherName) + ' — ยังไม่มีในบุคลากร' : '⚠️ ไม่ระบุครู')}</small></span>
+              <small class="${r.email ? 'tt-ok' : 'ii-note'}">${r.email ? '👤 ' + esc(teacherName(r.email)) : (r.teacherName ? '👤 ' + esc(r.teacherName) + ' <span class="ii-note" style="display:inline">(ยังไม่มีอีเมล)</span>' : '⚠️ ไม่ระบุครู')}</small></span>
             ${r.exists ? '<span class="tt-tag">มีแล้ว</span>' : ''}
           </label>`; }).join('')}
       </details>`; }).join('')}</div>
-    <p class="import-sum">จะสร้างวิชาใหม่ <b>${nNew}</b> วิชา${nOld ? ` • มีอยู่แล้ว ${nOld} วิชา` : ''} เข้าภาคเรียน <b>${esc(state.currentSemester)}/${esc(state.currentYear)}</b>
-      ${noT ? `<br><span style="color:#8A5A00">⚠️ ${noT} วิชายังไม่มีครูผู้สอนในระบบ — ผู้ดูแลเห็นได้ และกำหนดครูภายหลังได้ที่หน้ารายวิชา</span>` : ''}
-      ${unmatched.length ? `<br><small style="color:var(--ink-soft)">ครูที่ยังไม่มีในเมนูบุคลากร: ${unmatched.map(esc).join(', ')} — เพิ่มอีเมลครูก่อนแล้วนำเข้าซ้ำ ระบบจะใส่ครูให้วิชาที่มีอยู่แล้ว</small>` : ''}</p>`;
-  if (`${tt && v('ttTerm')}` !== `${state.currentYear}-${state.currentSemester}`)
-    box.insertAdjacentHTML('afterbegin', `<div class="info-box" style="background:#FFF4E0;color:#8A5A00">ภาคเรียนในไฟล์ไม่ตรงกับภาคเรียนปัจจุบันของระบบ (${esc(state.currentSemester)}/${esc(state.currentYear)}) — วิชาจะถูกนำเข้าไปที่ภาคเรียนปัจจุบัน ถ้าไม่ต้องการให้สลับภาคเรียนก่อน</div>`);
+    <p class="import-sum">จะสร้างวิชาใหม่ <b>${nNew}</b> วิชา${nOld ? ` • มีอยู่แล้ว ${nOld} วิชา` : ''} เข้าภาคเรียน <b>${esc(v('ttTarget'))}</b>
+
+      ${unmatched.length ? `<br><small style="color:var(--ink-soft)">ครูตามตารางสอนที่ยังไม่มีอีเมลในระบบ ${unmatched.length} คน — ระบบจะจำชื่อไว้ เมื่อเพิ่มอีเมลที่ "บุคลากร / ภาระงาน → เพิ่มครูจากตารางสอน" วิชาจะผูกกับครูให้อัตโนมัติ</small>` : ''}</p>`;
   document.getElementById('ttGoBtn').disabled = sel.length === 0;
   // คงสถานะการกางรายการไว้
   (window.__ttOpen || []).forEach(k => { const d = [...box.querySelectorAll('details')].find(x => x.querySelector('b').textContent === 'ชั้น ' + k); if (d) d.open = true; });
@@ -1933,13 +1991,20 @@ async function processSubjectImport(){
   if (!rows.length) return toast('กรุณาเลือกอย่างน้อย 1 วิชา', 'error');
   const update = document.getElementById('tt_update').checked;
   const nNew = rows.filter(r => !r.exists).length;
-  if (!confirm(`ยืนยันนำเข้ารายวิชา ${rows.length} รายการ (ใหม่ ${nNew}) เข้าภาคเรียน ${state.currentSemester}/${state.currentYear}?`)) return;
+  if (!confirm(`ยืนยันนำเข้ารายวิชา ${rows.length} รายการ (ใหม่ ${nNew}) เข้าภาคเรียน ${v('ttTarget')}?`)) return;
   try {
-    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, credit: r.credit, teachers: r.email ? [r.email] : [], teacher_names: r.email ? { [r.email]: teacherName(r.email) } : {} })),
-      { semester: state.currentSemester, academicYear: state.currentYear, update });
-    state.subjects = res.subjects;
-    fillTermSelects(); fillSubjectSelects(); renderSubjects(); renderDashboardStats();
+    const tg = ttTargetTerm();
+    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, credit: r.credit, planned_teacher: r.teacherName, teachers: r.email ? [r.email] : [], teacher_names: r.email ? { [r.email]: teacherName(r.email) } : {} })),
+      { semester: tg.sem, academicYear: tg.yr, update });
+    state.registeredTerms = res.registeredTerms || state.registeredTerms;
     closeModal();
+    if (tg.sem !== String(state.currentSemester) || tg.yr !== String(state.currentYear)) {
+      fillTermSelects();
+      if (confirm(`นำเข้าวิชาไปที่ภาคเรียน ${tg.sem}/${tg.yr} แล้ว\nต้องการสลับไปดูภาคเรียน ${tg.sem}/${tg.yr} เลยไหม?`)) await changeActiveTerm(`${tg.sem}/${tg.yr}`);
+    } else {
+      state.subjects = res.subjects;
+      fillTermSelects(); fillSubjectSelects(); renderSubjects(); renderDashboardStats();
+    }
     toast(`สร้างวิชาใหม่ ${res.created} วิชา` + (res.updated ? ` • อัปเดต ${res.updated} วิชา` : '') + (res.skipped ? ` • ข้าม ${res.skipped} วิชา` : ''));
   } catch (e) {}
 }
@@ -2404,13 +2469,13 @@ function processExportStudentsCsv() {
     return toast('ไม่พบข้อมูลนักเรียนสำหรับส่งออก', 'error');
   }
 
-  const headers = ['รหัสนักเรียน', 'เลขประชาชน', 'ชื่อ', 'นามสกุล', 'ชั้น', 'ห้อง', 'ภาคเรียน', 'ปีการศึกษา', 'สถานะ'];
+  const headers = ['รหัสนักเรียน', 'คำนำหน้า', 'ชื่อ', 'นามสกุล', 'ชั้น', 'ห้อง', 'ภาคเรียน', 'ปีการศึกษา', 'สถานะ'];
   const csvRows = [headers.join(',')];
 
   targetStudents.forEach(s => {
     const row = [
       `"${s.student_id || ''}"`,
-      `"${s.citizen_id || ''}"`,
+      `"${s.prefix || ''}"`,
       `"${s.first_name || ''}"`,
       `"${s.last_name || ''}"`,
       `"${s.class_level || ''}"`,

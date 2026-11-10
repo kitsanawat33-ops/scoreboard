@@ -497,13 +497,12 @@ export async function importStudentGroups(groups, opts = {}) {
     const level = str(g.level), room = str(g.room || '1');
     if (!level) return;
     const id = rosterId(sem, yr, level, room);
-    target[id] = target[id] || { level, room, students: {}, citizen: {} };
+    target[id] = target[id] || { level, room, students: {} };
     (g.students || []).forEach(s => {
       const sid = str(s.student_id); if (!sid) return;
       if (where[sid] && where[sid] !== id) delete target[where[sid]].students[sid];
       where[sid] = id;
       target[id].students[sid] = { student_id: sid, prefix: str(s.prefix), first_name: str(s.first_name), last_name: str(s.last_name), status: 'ACTIVE' };
-      if (opts.includeCitizen && /^\d{13}$/.test(str(s.citizen_id))) target[id].citizen[sid] = str(s.citizen_id);
     });
   });
   const ops = [];
@@ -517,7 +516,6 @@ export async function importStudentGroups(groups, opts = {}) {
     Object.assign(students, t.students);
     count += Object.keys(t.students).length;
     ops.push(['set', ref('rosters', id), { semester: sem, academic_year: yr, level: t.level, room: t.room, students }]);
-    if (Object.keys(t.citizen).length) ops.push(['merge', ref('rosterSecrets', id), { citizen: t.citizen }]);
   });
   // นักเรียนที่ย้ายห้อง: เอาออกจากห้องเดิมในภาคเรียนเดียวกัน
   existing.forEach(r => {

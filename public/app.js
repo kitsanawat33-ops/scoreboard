@@ -1850,7 +1850,7 @@ function openImportModal() {
   document.getElementById('modalBody').innerHTML = `
     <div class="info-box">รองรับ 3 แบบ: <b>CSV รายชื่อจาก SchoolMIS</b> (มีคอลัมน์ ระดับชั้น/ห้อง) •
       <b>ไฟล์ใบรายชื่อ .xlsx</b> (1 แผ่นงานต่อห้อง) • <b>CSV แบบเดิม</b> (รหัสนักเรียน, ชื่อ, นามสกุล — ต้องระบุชั้น/ห้องเอง)<br>
-      ระบบอ่านเฉพาะ เลขประจำตัว คำนำหน้า ชื่อ สกุล ชั้น ห้อง ข้อมูลอื่น (วันเกิด ที่อยู่ ฯลฯ) จะไม่ถูกนำเข้า</div>
+      ระบบอ่านเฉพาะ เลขประจำตัว คำนำหน้า ชื่อ สกุล ชั้น ห้อง — เลขประชาชนและข้อมูลอื่น (วันเกิด ที่อยู่ ฯลฯ) จะไม่ถูกนำเข้า</div>
     <div class="form-row"><label>เลือกไฟล์ (.csv หรือ .xlsx)</label><input type="file" id="stuFile" accept=".csv,.xlsx,text/csv" onchange="readStudentFile()"></div>
     <div id="importFallback" class="form-grid" style="display:none">
       <div class="form-row"><label>ระดับชั้น (เช่น ม.5)</label><input id="import_level" value="ม.5" oninput="readStudentFile()"></div>
@@ -1859,7 +1859,6 @@ function openImportModal() {
     <div id="importPreview"></div>
     <div class="import-opts">
       <label><input type="checkbox" id="imp_replace"> แทนที่รายชื่อเดิมของห้องที่เลือก (นักเรียนที่ไม่มีในไฟล์จะถูกปิดใช้งานในภาคเรียนนี้)</label>
-      <label><input type="checkbox" id="imp_citizen"> นำเข้าเลขประจำตัวประชาชนด้วย (เก็บแยก อ่านได้เฉพาะผู้ดูแล — ถ้าไม่จำเป็นแนะนำไม่ต้องติ๊ก)</label>
     </div>
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">ยกเลิก</button>
@@ -1895,7 +1894,6 @@ function rowsToStudents(rows, hdrIdx){
   const h = rows[hdrIdx].map(cleanCell);
   const c = {
     sid: colIdx(h, /^(เลขประจำตัว(นักเรียน)?|รหัสนักเรียน)$/),
-    cid: colIdx(h, /^(เลข\s*ปปช\.?|เลข\s*ปชช\.?|เลขประชาชน|เลขประจำตัวประชาชน)$/),
     pre: colIdx(h, /^(คำนำหน้า|คำหน้าชื่อ)/),
     fn:  colIdx(h, /^ชื่อ$/),
     ln:  colIdx(h, /^(สกุล|นามสกุล)$/),
@@ -1909,7 +1907,6 @@ function rowsToStudents(rows, hdrIdx){
     const fn = cleanCell(r[c.fn]); if (!fn) return;
     out.push({
       student_id: sid, prefix: c.pre >= 0 ? cleanCell(r[c.pre]) : '', first_name: fn, last_name: c.ln >= 0 ? cleanCell(r[c.ln]) : '',
-      citizen_id: c.cid >= 0 ? cleanCell(r[c.cid]).replace(/\D/g, '') : '',
       level: c.lv >= 0 ? cleanCell(r[c.lv]) : '', room: c.rm >= 0 ? cleanCell(r[c.rm]) : ''
     });
   });
@@ -2015,12 +2012,11 @@ async function processImportStudents(){
   const groups = importGroups.filter(g => g.selected && g.level);
   if (!groups.length) return toast('กรุณาเลือกอย่างน้อย 1 ห้อง', 'error');
   const replace = document.getElementById('imp_replace').checked;
-  const withCid = document.getElementById('imp_citizen').checked;
   const total = groups.reduce((a, g) => a + g.students.length, 0);
   if (!confirm(`ยืนยันนำเข้า ${total} คน (${groups.length} ห้อง) เข้าภาคเรียน ${state.currentSemester}/${state.currentYear}?` + (replace ? '\n\nนักเรียนเดิมในห้องที่เลือกที่ไม่มีในไฟล์จะถูกปิดใช้งาน' : ''))) return;
   try {
     const res = await gas('importStudentGroups', groups.map(g => ({ level: g.level, room: g.room, students: g.students })),
-      { semester: state.currentSemester, academicYear: state.currentYear, replace, includeCitizen: withCid });
+      { semester: state.currentSemester, academicYear: state.currentYear, replace });
     state.students = res.students;
     renderStudents(); fillReportStudents();
     state.summary = await API.getDashboardSummary(null, state.currentSemester, state.currentYear); renderDashboardStats();

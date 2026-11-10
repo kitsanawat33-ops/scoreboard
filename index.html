@@ -111,8 +111,14 @@
       splash.classList.add('hide');
     });
 
-    window.addEventListener('online', loadApp);
-    window.addEventListener('offline', () => showNotice('ออฟไลน์อยู่ — การบันทึกจะทำงานเมื่อกลับมาออนไลน์'));
+    // เน็ตหลุด/กลับมา: ห้ามโหลดแอปใหม่ ถ้าแอปโหลดไว้แล้ว (กันข้อมูลที่กำลังเช็คชื่อหาย)
+    window.addEventListener('online', () => {
+      if (loaded) { hideNotice(); return; }
+      loadApp();   // ยังไม่เคยโหลดสำเร็จ (เปิดแอปตอนไม่มีเน็ต) → โหลดตอนนี้
+    });
+    window.addEventListener('offline', () => {
+      showNotice('ออฟไลน์อยู่ — เช็คชื่อต่อได้ ระบบจะเก็บไว้และส่งให้เมื่อกลับมาออนไลน์');
+    });
     document.getElementById('retryBtn').addEventListener('click', () => { frame.src = 'about:blank'; loadApp(); });
 
     loadApp();

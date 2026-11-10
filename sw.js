@@ -1,5 +1,5 @@
 /* Service Worker ของตัวห่อ PWA (แคชเฉพาะเปลือกแอป — ข้อมูลจริงอยู่บน Google Sheets ต้องใช้อินเทอร์เน็ต) */
-const CACHE = 'scoreboard-shell-v1';
+const CACHE = 'scoreboard-shell-v2';
 const SHELL = [
   './',
   './index.html',

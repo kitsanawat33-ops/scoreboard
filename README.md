@@ -1,4 +1,4 @@
-# PPJ ScoreBoard — เวอร์ชัน Firebase
+# ClassHub (PPJ ScoreBoard) — เวอร์ชัน Firebase
 
 ระบบบันทึกคะแนน เช็คชื่อ (รายวิชา + ประจำชั้น) เช็คงาน และตัดเกรดนักเรียน
 ย้ายจาก Google Apps Script + Google Sheets มาใช้ **Firebase (Firestore + Authentication + Hosting)**

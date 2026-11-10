@@ -1,0 +1,7 @@
+# ห้าม commit ไฟล์ข้อมูลนักเรียนหรือกุญแจ
+*.xlsx
+*.csv
+*service-account*.json
+*-firebase-adminsdk-*.json
+.firebase/
+node_modules/

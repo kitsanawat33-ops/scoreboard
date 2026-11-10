@@ -1,0 +1,1310 @@
+// =====================================================================
+// api.js — ชั้นข้อมูลของ ScoreBoard บน Firestore
+// พอร์ตตรรกะจาก Code.gs เดิม (ชื่อฟังก์ชันและรูปแบบผลลัพธ์เหมือนเดิม)
+// หน้าเว็บเรียกผ่าน gas('ชื่อฟังก์ชัน', ...) เหมือนตอนใช้ Apps Script
+// =====================================================================
+import * as F from './fb.js';
+import { BOOTSTRAP_ADMIN } from './config.js';
+
+const { db, auth } = F;
+
+export const CATEGORIES = {
+  CLASSWORK: 'คะแนนเก็บ',
+  ATTENDANCE: 'คะแนนเข้าเรียน',
+  TASKS: 'ส่งงาน',
+  MIDTERM: 'กลางภาค',
+  FINAL: 'ปลายภาค'
+};
+const STATUS_LABELS = { NORMAL: null, I: 'ร', W: 'มส', ZERO: '0' };
+
+const DEFAULT_GRADE_RULES = [
+  { min_score: 80, max_score: 100, grade: '4', point: 4 },
+  { min_score: 75, max_score: 79.99, grade: '3.5', point: 3.5 },
+  { min_score: 70, max_score: 74.99, grade: '3', point: 3 },
+  { min_score: 65, max_score: 69.99, grade: '2.5', point: 2.5 },
+  { min_score: 60, max_score: 64.99, grade: '2', point: 2 },
+  { min_score: 55, max_score: 59.99, grade: '1.5', point: 1.5 },
+  { min_score: 50, max_score: 54.99, grade: '1', point: 1 },
+  { min_score: 0, max_score: 49.99, grade: '0', point: 0 }
+];
+const DEFAULT_ATT_STATUSES = [
+  { status_id: 'PRESENT', label: 'มา', color: '#0EA968', sequence: 1, status: 'ACTIVE', score_value: 1 },
+  { status_id: 'ABSENT', label: 'ขาด', color: '#E5484D', sequence: 2, status: 'ACTIVE', score_value: 0 },
+  { status_id: 'LEAVE', label: 'ลา', color: '#2F80ED', sequence: 3, status: 'ACTIVE', score_value: 1 },
+  { status_id: 'LATE', label: 'มาสาย', color: '#F0A020', sequence: 4, status: 'ACTIVE', score_value: 0.5 },
+  { status_id: 'ACTIVITY', label: 'ทำกิจกรรม', color: '#7F2BE3', sequence: 5, status: 'ACTIVE', score_value: 1 }
+];
+const DEFAULT_TASK_STATUSES = [
+  { status_id: 'SUBMITTED', label: 'ส่งแล้ว', color: '#0EA968', sequence: 1, status: 'ACTIVE', score_value: 1 },
+  { status_id: 'LATE', label: 'ส่งช้า', color: '#F0A020', sequence: 2, status: 'ACTIVE', score_value: 0.8 },
+  { status_id: 'REVISE', label: 'รอแก้ไข', color: '#7F2BE3', sequence: 3, status: 'ACTIVE', score_value: 0.5 },
+  { status_id: 'MISSING', label: 'ยังไม่ส่ง', color: '#E5484D', sequence: 4, status: 'ACTIVE', score_value: 0 },
+  { status_id: 'EXCUSED', label: 'ยกเว้น', color: '#2F80ED', sequence: 5, status: 'ACTIVE', score_value: 1 }
+];
+
+// ---------------------------------------------------------------------
+// สถานะภายใน
+// ---------------------------------------------------------------------
+const S = {
+  me: null,            // { email, name, role, active, homerooms[] }
+  settings: null,      // meta/settings
+  gradeRules: [],
+  attStatuses: [],
+  taskStatuses: [],
+  term: { sem: '1', yr: '2569' },
+  subjectCache: {}     // subject_id -> subject
+};
+
+export const isAdmin = () => !!S.me && S.me.role === 'admin';
+export const me = () => S.me;
+
+// ---------------------------------------------------------------------
+// ตัวช่วย
+// ---------------------------------------------------------------------
+const uid = (n = 12) => {
+  const a = new Uint8Array(Math.ceil(n / 2));
+  crypto.getRandomValues(a);
+  return Array.from(a, b => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+};
+const str = v => String(v ?? '').trim();
+const num = v => Number(v);
+const toBool = v => v === true || v === 'TRUE' || v === 'true' || v === 1 || v === '1';
+const nowIso = () => new Date().toISOString();
+const ref = (...p) => F.doc(db, ...p);
+
+export function rosterId(sem, yr, level, room) {
+  return `${str(sem)}_${str(yr)}_${str(level)}_${str(room)}`.replace(/\//g, '-');
+}
+function normalizeDateStr(d) {
+  if (!d) return '';
+  // เลขวันที่แบบ Excel (เช่น 46328) → yyyy-mm-dd โดยคิดแบบ UTC เพื่อไม่ให้วันเลื่อนตามเขตเวลา
+  if (typeof d === 'number' && d > 20000 && d < 80000) {
+    const t = new Date(Date.UTC(1899, 11, 30) + Math.round(d * 86400000));
+    const p = n => String(n).padStart(2, '0');
+    return `${t.getUTCFullYear()}-${p(t.getUTCMonth() + 1)}-${p(t.getUTCDate())}`;
+  }
+  if (d instanceof Date) {
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  const s = String(d).trim();
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : s;
+}
+
+// อ่านเอกสาร: ออนไลน์อ่านจากเซิร์ฟเวอร์ ถ้าเน็ตหลุดอ่านจากที่เก็บในเครื่อง
+async function read(r) {
+  const snap = await F.getDoc(r);
+  return snap.exists() ? snap.data() : null;
+}
+
+// เขียน: ออนไลน์รอเซิร์ฟเวอร์ยืนยัน (สูงสุด 10 วินาที)
+// ออฟไลน์/เน็ตช้า: เขียนลงเครื่องแล้วไปต่อเลย Firestore จะส่งให้เองเมื่อกลับมาออนไลน์
+async function commit(promise) {
+  if (!navigator.onLine) { promise.catch(e => console.warn('pending write failed', e)); return { pending: true }; }
+  let timer;
+  const timeout = new Promise(res => { timer = setTimeout(() => res({ pending: true }), 10000); });
+  try {
+    const r = await Promise.race([promise.then(() => ({ pending: false })), timeout]);
+    if (r.pending) promise.catch(e => console.warn('pending write failed', e));
+    return r;
+  } finally { clearTimeout(timer); }
+}
+
+function requireAdmin() { if (!isAdmin()) throw new Error('เฉพาะผู้ดูแลระบบเท่านั้น'); }
+
+// ---------------------------------------------------------------------
+// เข้าสู่ระบบ
+// ---------------------------------------------------------------------
+export async function login() {
+  const provider = new F.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  try {
+    await F.signInWithPopup(auth, provider);
+  } catch (e) {
+    if (e && (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment')) {
+      await F.signInWithRedirect(auth, provider);
+    } else throw e;
+  }
+}
+export async function logout() { await F.signOut(auth); S.me = null; }
+export function onAuth(cb) { return F.onAuthStateChanged(auth, cb); }
+
+// ตรวจสิทธิ์หลังล็อกอิน คืนค่า { ok, reason }
+export async function resolveUser(user) {
+  if (!user) return { ok: false, reason: 'signed-out' };
+  const email = String(user.email || '').toLowerCase();
+  const bootstrap = email === BOOTSTRAP_ADMIN.toLowerCase();
+  let u = null;
+  try { u = await read(ref('users', email)); } catch (e) { u = null; }
+  if (!u && bootstrap) {
+    u = { email, name: user.displayName || email, role: 'admin', active: true, homerooms: [], createdAt: nowIso() };
+    await F.setDoc(ref('users', email), u);
+  }
+  if (!u) return { ok: false, reason: 'not-registered', email };
+  if (u.active !== true && !bootstrap) return { ok: false, reason: 'suspended', email };
+  S.me = { email, name: u.name || user.displayName || email, role: bootstrap ? 'admin' : (u.role || 'teacher'), active: true, homerooms: u.homerooms || [] };
+  return { ok: true, me: S.me };
+}
+
+// ---------------------------------------------------------------------
+// ตั้งค่า / ข้อมูลตั้งต้น
+// ---------------------------------------------------------------------
+async function loadMeta() {
+  let [settings, gr, as, ts] = await Promise.all([
+    read(ref('meta', 'settings')), read(ref('meta', 'gradeRules')),
+    read(ref('meta', 'attendanceStatuses')), read(ref('meta', 'taskStatuses'))
+  ]);
+  if (isAdmin()) {
+    const writes = [];
+    if (!settings) { settings = { SCHOOL_NAME: 'โรงเรียนบ้านโพนแพง เจียรวนนท์อุทิศ 5', CURRENT_SEMESTER: '1', CURRENT_YEAR: '2569', REGISTERED_TERMS: ['1/2569'] }; writes.push(F.setDoc(ref('meta', 'settings'), settings)); }
+    if (!gr) { gr = { list: DEFAULT_GRADE_RULES }; writes.push(F.setDoc(ref('meta', 'gradeRules'), gr)); }
+    if (!as) { as = { list: DEFAULT_ATT_STATUSES }; writes.push(F.setDoc(ref('meta', 'attendanceStatuses'), as)); }
+    if (!ts) { ts = { list: DEFAULT_TASK_STATUSES }; writes.push(F.setDoc(ref('meta', 'taskStatuses'), ts)); }
+    if (writes.length) await commit(Promise.all(writes));
+  }
+  S.settings = settings || { SCHOOL_NAME: '', CURRENT_SEMESTER: '1', CURRENT_YEAR: '2569', REGISTERED_TERMS: ['1/2569'] };
+  S.gradeRules = ((gr && gr.list) || DEFAULT_GRADE_RULES).slice().sort((a, b) => num(b.min_score) - num(a.min_score));
+  S.attStatuses = sortStatuses((as && as.list) || DEFAULT_ATT_STATUSES);
+  S.taskStatuses = sortStatuses((ts && ts.list) || DEFAULT_TASK_STATUSES);
+}
+const sortStatuses = l => l.filter(s => s.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
+
+function settingsOut() {
+  const s = S.settings || {};
+  return {
+    SCHOOL_NAME: s.SCHOOL_NAME || '',
+    CURRENT_SEMESTER: S.term.sem,
+    CURRENT_YEAR: S.term.yr,
+    REGISTERED_TERMS: JSON.stringify(registeredTerms())
+  };
+}
+function registeredTerms() {
+  const t = (S.settings && S.settings.REGISTERED_TERMS) || ['1/2569'];
+  return Array.from(new Set(Array.isArray(t) ? t : String(t).split(',').map(x => x.trim()).filter(Boolean)));
+}
+
+function pickTerm() {
+  let saved = null;
+  try { saved = localStorage.getItem('sb_term'); } catch (e) {}
+  const terms = registeredTerms();
+  const def = `${S.settings.CURRENT_SEMESTER || '1'}/${S.settings.CURRENT_YEAR || '2569'}`;
+  const t = (saved && terms.includes(saved)) ? saved : def;
+  const [sem, yr] = t.split('/');
+  S.term = { sem, yr };
+}
+function rememberTerm() { try { localStorage.setItem('sb_term', `${S.term.sem}/${S.term.yr}`); } catch (e) {} }
+
+export async function getInitialData() {
+  await loadMeta();
+  pickTerm();
+  const [students, subjects, allSubjects] = await Promise.all([
+    getStudents(S.term.sem, S.term.yr), getSubjects(S.term.sem, S.term.yr), getSubjects()
+  ]);
+  return {
+    students, subjects, allSubjects,
+    gradeRules: S.gradeRules,
+    settings: settingsOut(),
+    registeredTerms: registeredTerms(),
+    summary: summaryFrom(students, subjects),
+    categories: CATEGORIES,
+    attendanceStatuses: S.attStatuses,
+    taskStatuses: S.taskStatuses,
+    me: S.me
+  };
+}
+
+function summaryFrom(students, subjects) {
+  return {
+    studentCount: students.filter(s => s.status !== 'INACTIVE').length,
+    subjectCount: subjects.filter(s => s.status !== 'INACTIVE').length,
+    scoreCount: 0,
+    gradeCounts: {}
+  };
+}
+
+export async function getDashboardSummary(subjectId, semester, academicYear) {
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  const [students, subjects] = await Promise.all([getStudents(sem, yr), getSubjects(sem, yr)]);
+  const out = summaryFrom(students, subjects);
+  if (subjectId) {
+    const sh = await read(ref('scoreSheets', String(subjectId)));
+    let c = 0;
+    Object.values((sh && sh.scores) || {}).forEach(m => Object.values(m || {}).forEach(v => { if (v !== '' && v != null) c++; }));
+    out.scoreCount = c;
+  }
+  return out;
+}
+
+export async function saveSchoolNameSetting(name) {
+  requireAdmin();
+  const schoolName = str(name);
+  if (!schoolName) throw new Error('กรุณาระบุชื่อโรงเรียน/สถานศึกษา');
+  S.settings.SCHOOL_NAME = schoolName;
+  await commit(F.setDoc(ref('meta', 'settings'), { SCHOOL_NAME: schoolName }, { merge: true }));
+  return settingsOut();
+}
+
+// ---------------------------------------------------------------------
+// ภาคเรียน
+// ---------------------------------------------------------------------
+async function saveTerms(terms, extra = {}) {
+  const clean = Array.from(new Set(terms.filter(Boolean)));
+  S.settings.REGISTERED_TERMS = clean;
+  Object.assign(S.settings, extra);
+  await commit(F.setDoc(ref('meta', 'settings'), Object.assign({ REGISTERED_TERMS: clean }, extra), { merge: true }));
+  return clean;
+}
+
+export async function switchTerm(semester, year) {
+  S.term = { sem: str(semester || '1'), yr: str(year || '2569') };
+  rememberTerm();
+  const [students, subjects] = await Promise.all([getStudents(S.term.sem, S.term.yr), getSubjects(S.term.sem, S.term.yr)]);
+  return { settings: settingsOut(), registeredTerms: registeredTerms(), students, subjects, summary: summaryFrom(students, subjects) };
+}
+
+export async function createNewTerm(semester, academicYear) {
+  requireAdmin();
+  const sem = str(semester), yr = str(academicYear);
+  if (!sem || !yr) throw new Error('กรุณาระบุภาคเรียนและปีการศึกษา');
+  const termStr = `${sem}/${yr}`;
+  const terms = registeredTerms();
+  if (!terms.includes(termStr)) terms.push(termStr);
+  await saveTerms(terms, { CURRENT_SEMESTER: sem, CURRENT_YEAR: yr });
+  S.term = { sem, yr }; rememberTerm();
+  return {
+    ok: true, createdTerm: termStr, currentSemester: sem, currentYear: yr,
+    registeredTerms: registeredTerms(),
+    students: await getStudents(sem, yr), subjects: await getSubjects(sem, yr), settings: settingsOut()
+  };
+}
+
+export async function deleteTermCompletely(semester, academicYear, confirmText) {
+  requireAdmin();
+  const sem = str(semester), yr = str(academicYear), termStr = `${sem}/${yr}`;
+  if (str(confirmText) !== termStr) throw new Error(`กรุณาพิมพ์ ${termStr} เพื่อยืนยันการลบ`);
+
+  // นักเรียน/รายวิชาในเทอมนี้ → INACTIVE (ข้อมูลเดิมยังอยู่ กู้คืนได้)
+  const rosters = await F.getDocs(F.query(F.collection(db, 'rosters'), F.where('semester', '==', sem), F.where('academic_year', '==', yr)));
+  const subs = await F.getDocs(F.query(F.collection(db, 'subjects'), F.where('semester', '==', sem), F.where('academic_year', '==', yr)));
+  const batch = F.writeBatch(db);
+  rosters.forEach(d => {
+    const st = d.data().students || {};
+    Object.keys(st).forEach(k => { st[k].status = 'INACTIVE'; });
+    batch.update(d.ref, { students: st });
+  });
+  subs.forEach(d => batch.update(d.ref, { status: 'INACTIVE' }));
+  await commit(batch.commit());
+
+  let terms = registeredTerms().filter(t => t !== termStr);
+  if (!terms.length) terms = ['1/2569'];
+  const extra = {};
+  if (S.settings.CURRENT_SEMESTER === sem && S.settings.CURRENT_YEAR === yr) {
+    const [s0, y0] = terms[0].split('/'); extra.CURRENT_SEMESTER = s0; extra.CURRENT_YEAR = y0;
+  }
+  await saveTerms(terms, extra);
+  if (S.term.sem === sem && S.term.yr === yr) { const [s0, y0] = terms[0].split('/'); S.term = { sem: s0, yr: y0 }; rememberTerm(); }
+  return {
+    ok: true, deletedTerm: termStr, registeredTerms: terms,
+    currentSemester: S.term.sem, currentYear: S.term.yr,
+    subjects: await getSubjects(S.term.sem, S.term.yr), allSubjects: await getSubjects(),
+    students: await getStudents(S.term.sem, S.term.yr), settings: settingsOut()
+  };
+}
+
+export async function copyTermData(payload) {
+  requireAdmin();
+  if (!payload || !payload.sourceSemester || !payload.sourceYear || !payload.targetSemester || !payload.targetYear)
+    throw new Error('กรุณาระบุภาคเรียนและปีการศึกษาต้นทาง-ปลายทาง');
+  const srcSem = str(payload.sourceSemester), srcYr = str(payload.sourceYear);
+  const tgtSem = str(payload.targetSemester), tgtYr = str(payload.targetYear);
+  let copiedSubjectsCount = 0, copiedStudentsCount = 0;
+  const batch = F.writeBatch(db);
+
+  if (payload.copyStudents) {
+    const rosters = await F.getDocs(F.query(F.collection(db, 'rosters'), F.where('semester', '==', srcSem), F.where('academic_year', '==', srcYr)));
+    const secrets = {};
+    for (const d of rosters.docs) {
+      const sec = await read(ref('rosterSecrets', d.id));
+      secrets[d.id] = (sec && sec.citizen) || {};
+    }
+    rosters.forEach(d => {
+      const r = d.data();
+      let lvl = str(r.level);
+      if (payload.promoteLevel) {
+        const m = lvl.match(/(\d+)/);
+        if (m) lvl = lvl.replace(m[1], String(parseInt(m[1], 10) + 1));
+      }
+      const students = {};
+      Object.values(r.students || {}).forEach(s => {
+        if (s.status === 'INACTIVE') return;
+        students[s.student_id] = { student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, status: 'ACTIVE' };
+        copiedStudentsCount++;
+      });
+      const nid = rosterId(tgtSem, tgtYr, lvl, r.room);
+      batch.set(ref('rosters', nid), { semester: tgtSem, academic_year: tgtYr, level: lvl, room: str(r.room), students }, { merge: true });
+      const cz = {};
+      Object.keys(students).forEach(sid => { if (secrets[d.id][sid]) cz[sid] = secrets[d.id][sid]; });
+      if (Object.keys(cz).length) batch.set(ref('rosterSecrets', nid), { citizen: cz }, { merge: true });
+    });
+  }
+
+  if (payload.copySubjects) {
+    const subs = await F.getDocs(F.query(F.collection(db, 'subjects'), F.where('semester', '==', srcSem), F.where('academic_year', '==', srcYr)));
+    subs.forEach(d => {
+      const s = d.data();
+      if (s.status === 'INACTIVE') return;
+      const nid = uid(10);
+      const items = {};
+      if (payload.copyScoreItems) {
+        Object.values(s.items || {}).forEach(it => {
+          if (it.status === 'INACTIVE') return;
+          const iid = uid(12);
+          items[iid] = Object.assign({}, it, { item_id: iid, subject_id: nid, status: 'ACTIVE' });
+        });
+      }
+      batch.set(ref('subjects', nid), {
+        subject_id: nid, subject_code: s.subject_code || '', subject_name: s.subject_name, level: s.level, room: s.room,
+        semester: tgtSem, academic_year: tgtYr, max_score: num(s.max_score || 100), status: 'ACTIVE',
+        teachers: s.teachers || [S.me.email], config: Object.assign({}, s.config || {}, { locked: false }),
+        items, tasks: {}, updated_at: nowIso()
+      });
+      copiedSubjectsCount++;
+    });
+  }
+  await commit(batch.commit());
+  const terms = registeredTerms();
+  if (!terms.includes(`${tgtSem}/${tgtYr}`)) terms.push(`${tgtSem}/${tgtYr}`);
+  await saveTerms(terms);
+  S.term = { sem: tgtSem, yr: tgtYr }; rememberTerm();
+  return {
+    ok: true, copiedSubjectsCount, copiedStudentsCount, registeredTerms: registeredTerms(),
+    subjects: await getSubjects(tgtSem, tgtYr), students: await getStudents(tgtSem, tgtYr),
+    allSubjects: await getSubjects(), settings: settingsOut()
+  };
+}
+
+// ---------------------------------------------------------------------
+// นักเรียน (เก็บเป็นห้อง: rosters/{ภาค_ปี_ชั้น_ห้อง})
+// ---------------------------------------------------------------------
+async function termRosters(sem, yr) {
+  const q = F.query(F.collection(db, 'rosters'), F.where('semester', '==', str(sem)), F.where('academic_year', '==', str(yr)));
+  const snap = await F.getDocs(q);
+  return snap.docs.map(d => Object.assign({ _id: d.id }, d.data()));
+}
+
+export async function getStudents(semester, academicYear) {
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  const rosters = await termRosters(sem, yr);
+  const secrets = {};
+  if (isAdmin()) {
+    await Promise.all(rosters.map(async r => {
+      try { const s = await read(ref('rosterSecrets', r._id)); secrets[r._id] = (s && s.citizen) || {}; } catch (e) { secrets[r._id] = {}; }
+    }));
+  }
+  const out = [];
+  rosters.forEach(r => {
+    Object.values(r.students || {}).forEach(s => {
+      out.push({
+        student_id: String(s.student_id), citizen_id: (secrets[r._id] || {})[s.student_id] || '',
+        first_name: s.first_name, last_name: s.last_name, class_level: r.level, room: r.room,
+        semester: sem, academic_year: yr, status: s.status || 'ACTIVE'
+      });
+    });
+  });
+  out.sort((a, b) => (a.class_level + a.room).localeCompare(b.class_level + b.room, 'th') || String(a.student_id).localeCompare(String(b.student_id), 'th', { numeric: true }));
+  return out;
+}
+
+async function rosterStudents(sem, yr, level, room) {
+  const r = await read(ref('rosters', rosterId(sem, yr, level, room)));
+  return Object.values((r && r.students) || {})
+    .filter(s => s.status !== 'INACTIVE')
+    .map(s => ({ student_id: String(s.student_id), first_name: s.first_name, last_name: s.last_name, status: s.status || 'ACTIVE' }))
+    .sort((a, b) => String(a.student_id).localeCompare(String(b.student_id), 'th', { numeric: true }));
+}
+
+async function upsertStudents(records) {
+  // records: [{student_id, citizen_id, first_name, last_name, class_level, room, semester, academic_year, status}]
+  const groups = {};
+  records.forEach(r => {
+    const id = rosterId(r.semester, r.academic_year, r.class_level, r.room);
+    (groups[id] = groups[id] || { meta: r, students: {}, citizen: {} });
+    groups[id].students[r.student_id] = { student_id: r.student_id, first_name: r.first_name, last_name: r.last_name, status: r.status || 'ACTIVE' };
+    if (r.citizen_id) groups[id].citizen[r.student_id] = r.citizen_id;
+  });
+  const batch = F.writeBatch(db);
+  Object.entries(groups).forEach(([id, g]) => {
+    batch.set(ref('rosters', id), {
+      semester: str(g.meta.semester), academic_year: str(g.meta.academic_year), level: str(g.meta.class_level), room: str(g.meta.room),
+      students: g.students
+    }, { merge: true });
+    if (Object.keys(g.citizen).length) batch.set(ref('rosterSecrets', id), { citizen: g.citizen }, { merge: true });
+  });
+  await commit(batch.commit());
+}
+
+// ลบนักเรียนออกจากห้องเดิม (กรณีย้ายห้อง)
+async function removeFromOtherRosters(sem, yr, studentId, keepId) {
+  const rosters = await termRosters(sem, yr);
+  const batch = F.writeBatch(db); let n = 0;
+  rosters.forEach(r => {
+    if (r._id === keepId) return;
+    if (r.students && r.students[studentId]) {
+      batch.update(ref('rosters', r._id), new F.FieldPath('students', String(studentId)), F.deleteField()); n++;
+    }
+  });
+  if (n) await commit(batch.commit());
+}
+
+export async function importStudents(rows, classLevel, room, semester, academicYear) {
+  requireAdmin();
+  if (!Array.isArray(rows) || rows.length < 2) throw new Error('ไม่พบข้อมูลนักเรียนในไฟล์');
+  const sem = str(semester || '1'), yr = str(academicYear || '2569');
+  const header = rows[0].map(x => str(x));
+  const idx = {}; header.forEach((h, i) => idx[h] = i);
+  const aliases = {
+    studentId: ['รหัสนักเรียน', 'เลขประจำตัว', 'เลขประจำตัวนักเรียน'],
+    citizenId: ['เลข ปชช.', 'เลขประชาชน', 'เลข ปชช', 'เลขประจำตัวประชาชน'],
+    firstName: ['ชื่อ'],
+    lastName: ['นามสกุล']
+  };
+  const c = {};
+  Object.keys(aliases).forEach(k => { c[k] = -1; for (const n of aliases[k]) if (idx[n] !== undefined) { c[k] = idx[n]; break; } });
+  if (c.studentId < 0 || c.firstName < 0 || c.lastName < 0) throw new Error('CSV ต้องมีคอลัมน์ รหัสนักเรียน, ชื่อ และ นามสกุล');
+  const records = [];
+  rows.slice(1).forEach(r => {
+    const sid = str(r[c.studentId]); if (!sid) return;
+    records.push({
+      student_id: sid, citizen_id: c.citizenId >= 0 ? str(r[c.citizenId]) : '',
+      first_name: str(r[c.firstName]), last_name: str(r[c.lastName]),
+      class_level: str(classLevel || 'ม.5'), room: str(room || '1'), semester: sem, academic_year: yr, status: 'ACTIVE'
+    });
+  });
+  await upsertStudents(records);
+  return { ok: true, count: records.length, students: await getStudents(sem, yr) };
+}
+
+export async function saveStudent(student) {
+  requireAdmin();
+  ['student_id', 'first_name', 'last_name'].forEach(k => { if (!str(student[k])) throw new Error(`กรุณากรอก ${k}`); });
+  const rec = {
+    student_id: str(student.student_id), citizen_id: str(student.citizen_id),
+    first_name: str(student.first_name), last_name: str(student.last_name),
+    class_level: str(student.class_level || 'ม.5'), room: str(student.room || '1'),
+    semester: str(student.semester || S.term.sem), academic_year: str(student.academic_year || S.term.yr),
+    status: str(student.status || 'ACTIVE')
+  };
+  await upsertStudents([rec]);
+  await removeFromOtherRosters(rec.semester, rec.academic_year, rec.student_id, rosterId(rec.semester, rec.academic_year, rec.class_level, rec.room));
+  return getStudents(rec.semester, rec.academic_year);
+}
+
+async function setStudentsInactive(sem, yr, match) {
+  const rosters = await termRosters(sem, yr);
+  const batch = F.writeBatch(db); let n = 0;
+  rosters.forEach(r => {
+    Object.values(r.students || {}).forEach(s => {
+      if (match(s, r)) { batch.update(ref('rosters', r._id), new F.FieldPath('students', String(s.student_id), 'status'), 'INACTIVE'); n++; }
+    });
+  });
+  if (n) await commit(batch.commit());
+}
+export async function deleteStudent(studentId, semester, academicYear) {
+  requireAdmin();
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  await setStudentsInactive(sem, yr, s => String(s.student_id) === String(studentId));
+  return getStudents(sem, yr);
+}
+export async function deleteAllStudents(semester, academicYear) {
+  requireAdmin();
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  await setStudentsInactive(sem, yr, () => true);
+  return getStudents(sem, yr);
+}
+export async function deleteStudentsByRoom(level, room, semester, academicYear) {
+  requireAdmin();
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  await setStudentsInactive(sem, yr, (s, r) => str(r.level) === str(level) && str(r.room) === str(room));
+  return getStudents(sem, yr);
+}
+
+// ---------------------------------------------------------------------
+// รายวิชา
+// ---------------------------------------------------------------------
+function subjectOut(d) {
+  const s = Object.assign({}, d);
+  S.subjectCache[s.subject_id] = d;
+  return s;
+}
+
+export async function getSubjects(semester, academicYear) {
+  let docs;
+  if (isAdmin()) {
+    const q = (semester || academicYear)
+      ? F.query(F.collection(db, 'subjects'), F.where('semester', '==', str(semester)), F.where('academic_year', '==', str(academicYear)))
+      : F.collection(db, 'subjects');
+    docs = (await F.getDocs(q)).docs.map(d => d.data());
+  } else {
+    const q = F.query(F.collection(db, 'subjects'), F.where('teachers', 'array-contains', S.me.email));
+    docs = (await F.getDocs(q)).docs.map(d => d.data());
+    if (semester || academicYear) docs = docs.filter(s => str(s.semester) === str(semester) && str(s.academic_year) === str(academicYear));
+  }
+  return docs.map(subjectOut).sort((a, b) => (a.level + a.room + a.subject_code).localeCompare(b.level + b.room + b.subject_code, 'th'));
+}
+
+async function getSubject(subjectId, fresh = true) {
+  const id = String(subjectId);
+  if (!fresh && S.subjectCache[id]) return S.subjectCache[id];
+  const d = await read(ref('subjects', id));
+  if (!d) throw new Error('ไม่พบรายวิชา');
+  S.subjectCache[id] = d;
+  return d;
+}
+
+export async function saveSubject(subject) {
+  if (!str(subject.subject_name)) throw new Error('กรุณากรอกชื่อวิชา');
+  const sem = str(subject.semester || S.term.sem), yr = str(subject.academic_year || S.term.yr);
+  const id = str(subject.subject_id) || uid(10);
+  const prev = str(subject.subject_id) ? await read(ref('subjects', id)) : null;
+  const teachers = isAdmin() && Array.isArray(subject.teachers) ? subject.teachers.map(e => str(e).toLowerCase()).filter(Boolean)
+    : (prev ? prev.teachers : [S.me.email]);
+  const rec = Object.assign({}, prev || { config: defaultConfig(), items: {}, tasks: {} }, {
+    subject_id: id, subject_code: str(subject.subject_code), subject_name: str(subject.subject_name),
+    level: str(subject.level || 'ม.5'), room: str(subject.room || '1'), semester: sem, academic_year: yr,
+    max_score: num(subject.max_score || 100), status: str(subject.status || 'ACTIVE'),
+    teachers: teachers.length ? teachers : [S.me.email], updated_at: nowIso()
+  });
+  await commit(F.setDoc(ref('subjects', id), rec));
+  S.subjectCache[id] = rec;
+  return getSubjects(sem, yr);
+}
+
+export async function deleteSubject(subjectId, semester, academicYear) {
+  await commit(F.updateDoc(ref('subjects', String(subjectId)), { status: 'INACTIVE', updated_at: nowIso() }));
+  return getSubjects(semester || S.term.sem, academicYear || S.term.yr);
+}
+
+export async function setSubjectTeachers(subjectId, emails) {
+  requireAdmin();
+  const list = Array.from(new Set((emails || []).map(e => str(e).toLowerCase()).filter(Boolean)));
+  if (!list.length) throw new Error('ต้องมีครูผู้สอนอย่างน้อย 1 คน');
+  await commit(F.updateDoc(ref('subjects', String(subjectId)), { teachers: list, updated_at: nowIso() }));
+  return getSubjects(S.term.sem, S.term.yr);
+}
+
+// ---------------------------------------------------------------------
+// องค์ประกอบคะแนน (เก็บใน subjects/{id}.items)
+// ---------------------------------------------------------------------
+export async function getScoreItems(subjectId) {
+  const s = await getSubject(subjectId);
+  return Object.values(s.items || {}).filter(i => i.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
+}
+
+export async function saveScoreItem(item) {
+  if (!item.subject_id || !item.item_name) throw new Error('กรุณาระบุวิชาและชื่อองค์ประกอบคะแนน');
+  const newScore = num(item.max_score || 0);
+  const isRetake = toBool(item.is_retake);
+  const items = await getScoreItems(item.subject_id);
+  const currentTotal = items.filter(i => i.item_id !== item.item_id && !toBool(i.is_retake)).reduce((s, i) => s + num(i.max_score || 0), 0);
+  if (!isRetake && currentTotal + newScore > 100)
+    throw new Error(`ไม่สามารถบันทึกได้ เนื่องจากคะแนนเต็มของรายวิชานี้รวมกันเกิน 100 คะแนน (ปัจจุบันรวม: ${currentTotal}, เพิ่ม/แก้ไข: ${newScore})`);
+  const id = str(item.item_id) || uid(12);
+  const rec = {
+    item_id: id, subject_id: String(item.subject_id), item_name: str(item.item_name),
+    category: str(item.category || CATEGORIES.CLASSWORK), max_score: newScore,
+    sequence: num(item.sequence || 1), status: str(item.status || 'ACTIVE'), is_retake: isRetake, updated_at: nowIso()
+  };
+  await commit(F.updateDoc(ref('subjects', String(item.subject_id)), new F.FieldPath('items', id), rec));
+  return getScoreItems(item.subject_id);
+}
+
+export async function copyScoreItems(sourceSubjectId, targetSubjectId) {
+  if (!sourceSubjectId || !targetSubjectId) throw new Error('กรุณาระบุวิชาต้นทางและปลายทาง');
+  if (sourceSubjectId === targetSubjectId) throw new Error('วิชาต้นทางและปลายทางเป็นวิชาเดียวกัน');
+  const src = await getScoreItems(sourceSubjectId);
+  if (!src.length) throw new Error('วิชาต้นทางที่เลือกไม่มีองค์ประกอบคะแนน');
+  const tgt = await getScoreItems(targetSubjectId);
+  const tTotal = tgt.filter(i => !toBool(i.is_retake)).reduce((s, i) => s + num(i.max_score || 0), 0);
+  const sTotal = src.filter(i => !toBool(i.is_retake)).reduce((s, i) => s + num(i.max_score || 0), 0);
+  if (tTotal + sTotal > 100) throw new Error(`คัดลอกไม่ได้เนื่องจากคะแนนรวมจะเกิน 100 คะแนน (วิชานี้มีอยู่แล้ว ${tTotal} คะแนน, นำเข้าเพิ่ม ${sTotal} คะแนน)`);
+  let maxSeq = tgt.reduce((m, i) => Math.max(m, num(i.sequence) || 0), 0);
+  const args = [];
+  src.forEach(it => {
+    maxSeq++;
+    const id = uid(12);
+    args.push(new F.FieldPath('items', id), Object.assign({}, it, { item_id: id, subject_id: String(targetSubjectId), sequence: maxSeq, status: 'ACTIVE', updated_at: nowIso() }));
+  });
+  await commit(F.updateDoc(ref('subjects', String(targetSubjectId)), ...args));
+  return getScoreItems(targetSubjectId);
+}
+
+export async function deleteScoreItem(itemId, subjectId) {
+  const sid = subjectId || Object.keys(S.subjectCache).find(k => (S.subjectCache[k].items || {})[itemId]);
+  if (!sid) throw new Error('ไม่พบองค์ประกอบคะแนน');
+  await commit(F.updateDoc(ref('subjects', String(sid)), new F.FieldPath('items', String(itemId), 'status'), 'INACTIVE'));
+  return true;
+}
+
+// ---------------------------------------------------------------------
+// สัดส่วนคะแนน / ล็อก (subjects/{id}.config)
+// ---------------------------------------------------------------------
+const defaultConfig = () => ({ credit: 1, mode: 'WEIGHT', classwork_weight: 40, midterm_weight: 20, final_weight: 40, locked: false });
+
+export async function getScoreConfig(subjectId) {
+  const s = await getSubject(subjectId);
+  return Object.assign({ subject_id: String(subjectId) }, defaultConfig(), s.config || {}, { locked: toBool((s.config || {}).locked) });
+}
+
+export async function saveScoreConfig(config) {
+  if (!config || !config.subject_id) throw new Error('กรุณาเลือกวิชา');
+  const prev = await getScoreConfig(config.subject_id);
+  const rec = {
+    credit: num(config.credit || 0), mode: str(config.mode || 'WEIGHT'),
+    classwork_weight: num(config.classwork_weight || 40), midterm_weight: num(config.midterm_weight || 20),
+    final_weight: num(config.final_weight || 40), locked: !!prev.locked
+  };
+  await commit(F.updateDoc(ref('subjects', String(config.subject_id)), { config: rec, updated_at: nowIso() }));
+  return getScoreConfig(config.subject_id);
+}
+
+export async function setScoreLock(subjectId, locked) {
+  await commit(F.updateDoc(ref('subjects', String(subjectId)), new F.FieldPath('config', 'locked'), !!locked));
+  return getScoreConfig(subjectId);
+}
+
+// ---------------------------------------------------------------------
+// สถานะ ร / มส / 0 (scoreSheets/{subjectId}.statuses)
+// ---------------------------------------------------------------------
+export async function saveStudentStatus(payload) {
+  if (!payload || !payload.student_id || !payload.subject_id) throw new Error('ข้อมูลไม่ถูกต้อง');
+  const cfg = await getScoreConfig(payload.subject_id);
+  if (cfg.locked) throw new Error('คะแนนวิชานี้ถูกล็อกแล้ว ไม่สามารถแก้ไขได้ กรุณาปลดล็อกก่อน');
+  const rec = { status: str(payload.status || 'NORMAL'), remark: str(payload.remark), updated_at: nowIso() };
+  await commit(F.setDoc(ref('scoreSheets', String(payload.subject_id)),
+    { subject_id: String(payload.subject_id), statuses: { [String(payload.student_id)]: rec } }, { merge: true }));
+  return getScoreEntryData(payload.subject_id);
+}
+
+// ---------------------------------------------------------------------
+// สถานะเช็คชื่อ / สถานะงาน (meta/attendanceStatuses, meta/taskStatuses)
+// ---------------------------------------------------------------------
+export function getAttendanceStatuses() { return S.attStatuses; }
+export function getTaskStatuses() { return S.taskStatuses; }
+
+async function saveStatusList(docId, list) {
+  await commit(F.setDoc(ref('meta', docId), { list }));
+}
+async function upsertStatus(kind, item) {
+  requireAdmin();
+  if (!str(item.label)) throw new Error('กรุณากรอกชื่อสถานะ');
+  const docId = kind === 'att' ? 'attendanceStatuses' : 'taskStatuses';
+  const all = ((await read(ref('meta', docId))) || { list: kind === 'att' ? DEFAULT_ATT_STATUSES : DEFAULT_TASK_STATUSES }).list.slice();
+  const existing = item.status_id ? all.find(s => String(s.status_id) === String(item.status_id)) : null;
+  const maxSeq = all.reduce((m, s) => Math.max(m, num(s.sequence) || 0), 0);
+  const id = str(item.status_id) || ((kind === 'att' ? 'CUSTOM_' : 'TASK_STAT_') + uid(8).toUpperCase());
+  const raw = item.score_value;
+  let sv = (raw === '' || raw == null) ? (existing ? num(existing.score_value) : 1) : num(raw);
+  if (!Number.isFinite(sv)) sv = 1;
+  const rec = {
+    status_id: id, label: str(item.label),
+    color: str(item.color || (existing ? existing.color : (kind === 'att' ? '#7F2BE3' : '#0EA968'))),
+    sequence: (item.sequence !== undefined && item.sequence !== '') ? num(item.sequence) : (existing ? num(existing.sequence) : maxSeq + 1),
+    status: str(item.status || 'ACTIVE'), score_value: sv
+  };
+  const list = existing ? all.map(s => String(s.status_id) === id ? rec : s) : all.concat([rec]);
+  await saveStatusList(docId, list);
+  if (kind === 'att') S.attStatuses = sortStatuses(list); else S.taskStatuses = sortStatuses(list);
+  return kind === 'att' ? S.attStatuses : S.taskStatuses;
+}
+async function removeStatus(kind, statusId) {
+  requireAdmin();
+  const docId = kind === 'att' ? 'attendanceStatuses' : 'taskStatuses';
+  const all = ((await read(ref('meta', docId))) || { list: [] }).list.map(s => String(s.status_id) === String(statusId) ? Object.assign({}, s, { status: 'INACTIVE' }) : s);
+  await saveStatusList(docId, all);
+  if (kind === 'att') S.attStatuses = sortStatuses(all); else S.taskStatuses = sortStatuses(all);
+  return kind === 'att' ? S.attStatuses : S.taskStatuses;
+}
+export const saveAttendanceStatus = item => upsertStatus('att', item);
+export const deleteAttendanceStatus = id => removeStatus('att', id);
+export const saveTaskStatus = item => upsertStatus('task', item);
+export const deleteTaskStatus = id => removeStatus('task', id);
+
+// ---------------------------------------------------------------------
+// เช็คชื่อรายวิชา (attendanceBook/{subjectId}.days[date][sid])
+// ---------------------------------------------------------------------
+export async function getAttendanceData(subjectId, date) {
+  if (!subjectId) throw new Error('กรุณาเลือกวิชา');
+  if (!date) throw new Error('กรุณาเลือกวันที่');
+  const cleanDate = normalizeDateStr(date);
+  const subject = await getSubject(subjectId);
+  const [students, book, hr] = await Promise.all([
+    rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room),
+    read(ref('attendanceBook', String(subjectId))),
+    read(ref('homeroomBook', rosterId(subject.semester, subject.academic_year, subject.level, subject.room))).catch(() => null)
+  ]);
+  const day = ((book && book.days) || {})[cleanDate] || {};
+  const morning = ((hr && hr.days) || {})[cleanDate] || {};
+  const rows = students.map(s => {
+    const rec = day[s.student_id];
+    const m = morning[s.student_id];
+    return {
+      student_id: s.student_id, first_name: s.first_name, last_name: s.last_name,
+      status_id: rec ? String(rec.status_id) : '', remark: rec ? String(rec.remark || '') : '',
+      homeroom_status: m ? String(m.status_id) : ''
+    };
+  });
+  return { subject, date: cleanDate, statuses: S.attStatuses, defaultStatus: (S.attStatuses[0] || {}).status_id || 'PRESENT', rows };
+}
+
+export async function saveAttendance(payload) {
+  if (!payload || !payload.subject_id || !payload.date || !Array.isArray(payload.rows)) throw new Error('ข้อมูลการเช็คชื่อไม่ถูกต้อง');
+  const subjectId = String(payload.subject_id);
+  const date = normalizeDateStr(payload.date);
+  const records = {};
+  payload.rows.forEach(r => { if (r.status_id) records[String(r.student_id)] = { status_id: String(r.status_id), remark: str(r.remark) }; });
+  const res = await commit(F.setDoc(ref('attendanceBook', subjectId), {
+    subject_id: subjectId,
+    days: { [date]: records },
+    log: { [date]: { by: S.me.email, at: nowIso() } }
+  }, { merge: true }));
+  const data = await getAttendanceData(subjectId, date);
+  data.pending = res.pending;
+  return data;
+}
+
+export async function getAttendanceSummary(subjectId, preSubject, preBook, preStudents) {
+  if (!subjectId) throw new Error('กรุณาเลือกวิชา');
+  const subject = preSubject || await getSubject(subjectId);
+  const students = preStudents || await rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room);
+  const book = preBook !== undefined ? preBook : await read(ref('attendanceBook', String(subjectId)));
+  return summarizeBook(subject, students, (book && book.days) || {}, S.attStatuses, true);
+}
+
+function summarizeBook(subject, students, days, statuses, withScore) {
+  const statusMap = {}; statuses.forEach(s => statusMap[String(s.status_id)] = s);
+  const allStatusMap = {};
+  const history = Object.keys(days).filter(Boolean).map(date => {
+    const counts = {}; let total = 0;
+    Object.values(days[date] || {}).forEach(r => { const k = String(r.status_id); counts[k] = (counts[k] || 0) + 1; total++; });
+    return { date, counts, total };
+  }).sort((a, b) => b.date.localeCompare(a.date));
+
+  const byStudent = {};
+  students.forEach(s => byStudent[s.student_id] = { student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, counts: {}, totalChecked: 0, scoreSum: 0 });
+  const overallCounts = {}; let totalRecords = 0;
+  Object.values(days).forEach(day => Object.entries(day || {}).forEach(([sid, r]) => {
+    const k = String(r.status_id);
+    overallCounts[k] = (overallCounts[k] || 0) + 1; totalRecords++;
+    const st = byStudent[sid]; if (!st) return;
+    st.counts[k] = (st.counts[k] || 0) + 1; st.totalChecked++;
+    const sv = statusMap[k] ? num(statusMap[k].score_value) : 0;
+    st.scoreSum += Number.isFinite(sv) ? sv : 0;
+  }));
+  const studentRows = students.map(s => {
+    const st = byStudent[s.student_id];
+    const attendanceScore = st.totalChecked > 0 ? Math.round((st.scoreSum / st.totalChecked) * 10 * 100) / 100 : 0;
+    const presentPct = st.totalChecked > 0 ? Math.round((st.scoreSum / st.totalChecked) * 100 * 100) / 100 : 0;
+    return { student_id: st.student_id, first_name: st.first_name, last_name: st.last_name, counts: st.counts, totalChecked: st.totalChecked, attendanceScore, presentPct };
+  });
+  const avgScore = studentRows.length ? Math.round(studentRows.reduce((a, s) => a + s.attendanceScore, 0) / studentRows.length * 100) / 100 : 0;
+  return { subject, statuses, totalSessions: history.length, totalRecords, overallCounts, avgScore, history, students: studentRows };
+}
+
+// ---------------------------------------------------------------------
+// เช็คชื่อประจำชั้น (homeroomBook/{rosterId}.days[date][sid])
+// ---------------------------------------------------------------------
+export async function getMyHomerooms(semester, academicYear) {
+  const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
+  const rosters = await termRosters(sem, yr);
+  const mine = isAdmin() ? rosters : rosters.filter(r => (S.me.homerooms || []).includes(`${r.level}|${r.room}`));
+  return mine.map(r => ({ roster_id: r._id, level: r.level, room: r.room, semester: sem, academic_year: yr,
+    count: Object.values(r.students || {}).filter(s => s.status !== 'INACTIVE').length }))
+    .sort((a, b) => (a.level + a.room).localeCompare(b.level + b.room, 'th', { numeric: true }));
+}
+
+function parseRosterId(id) {
+  const [sem, yr, ...rest] = String(id).split('_');
+  const room = rest.pop();
+  return { sem, yr, level: rest.join('_'), room };
+}
+
+export async function getHomeroomData(rosterIdStr, date) {
+  if (!rosterIdStr) throw new Error('กรุณาเลือกห้อง');
+  const cleanDate = normalizeDateStr(date);
+  const r = parseRosterId(rosterIdStr);
+  const [students, book] = await Promise.all([rosterStudents(r.sem, r.yr, r.level, r.room), read(ref('homeroomBook', rosterIdStr))]);
+  const day = ((book && book.days) || {})[cleanDate] || {};
+  const rows = students.map(s => ({
+    student_id: s.student_id, first_name: s.first_name, last_name: s.last_name,
+    status_id: day[s.student_id] ? String(day[s.student_id].status_id) : '', remark: day[s.student_id] ? str(day[s.student_id].remark) : ''
+  }));
+  const subject = { subject_id: rosterIdStr, subject_name: `ประจำชั้น ${r.level}/${r.room}`, level: r.level, room: r.room, semester: r.sem, academic_year: r.yr, homeroom: true };
+  return { subject, homeroom: true, roster_id: rosterIdStr, date: cleanDate, statuses: S.attStatuses, defaultStatus: (S.attStatuses[0] || {}).status_id || 'PRESENT', rows };
+}
+
+export async function saveHomeroom(payload) {
+  if (!payload || !payload.roster_id || !payload.date || !Array.isArray(payload.rows)) throw new Error('ข้อมูลการเช็คชื่อไม่ถูกต้อง');
+  const r = parseRosterId(payload.roster_id);
+  if (!isAdmin() && !(S.me.homerooms || []).includes(`${r.level}|${r.room}`)) throw new Error('คุณไม่ได้เป็นครูประจำชั้นของห้องนี้');
+  const date = normalizeDateStr(payload.date);
+  const records = {};
+  payload.rows.forEach(x => { if (x.status_id) records[String(x.student_id)] = { status_id: String(x.status_id), remark: str(x.remark) }; });
+  const res = await commit(F.setDoc(ref('homeroomBook', payload.roster_id), {
+    semester: r.sem, academic_year: r.yr, level: r.level, room: r.room,
+    days: { [date]: records }, log: { [date]: { by: S.me.email, at: nowIso() } }
+  }, { merge: true }));
+  const data = await getHomeroomData(payload.roster_id, date);
+  data.pending = res.pending;
+  return data;
+}
+
+export async function getHomeroomSummary(rosterIdStr) {
+  const r = parseRosterId(rosterIdStr);
+  const [students, book] = await Promise.all([rosterStudents(r.sem, r.yr, r.level, r.room), read(ref('homeroomBook', rosterIdStr))]);
+  const subject = { subject_id: rosterIdStr, subject_name: `ประจำชั้น ${r.level}/${r.room}`, level: r.level, room: r.room, homeroom: true };
+  return summarizeBook(subject, students, (book && book.days) || {}, S.attStatuses, false);
+}
+
+// ---------------------------------------------------------------------
+// ภาระงาน / การส่งงาน (subjects/{id}.tasks, taskBook/{subjectId}.tasks[taskId][sid])
+// ---------------------------------------------------------------------
+export async function getTasks(subjectId) {
+  const s = await getSubject(subjectId);
+  return Object.values(s.tasks || {}).filter(t => t.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
+}
+
+export async function saveTask(task) {
+  if (!task.subject_id || !task.task_name) throw new Error('กรุณาระบุวิชาและชื่อภาระงาน');
+  const id = str(task.task_id) || uid(12);
+  const tasks = await getTasks(task.subject_id);
+  const maxSeq = tasks.reduce((m, t) => Math.max(m, num(t.sequence) || 0), 0);
+  const rec = {
+    task_id: id, subject_id: String(task.subject_id), task_name: str(task.task_name),
+    due_date: normalizeDateStr(task.due_date || ''), sequence: task.sequence ? num(task.sequence) : maxSeq + 1,
+    status: str(task.status || 'ACTIVE'), updated_at: nowIso()
+  };
+  await commit(F.updateDoc(ref('subjects', String(task.subject_id)), new F.FieldPath('tasks', id), rec));
+  return getTasks(task.subject_id);
+}
+
+export async function deleteTask(taskId, subjectId) {
+  const sid = subjectId || Object.keys(S.subjectCache).find(k => (S.subjectCache[k].tasks || {})[taskId]);
+  if (!sid) throw new Error('ไม่พบภาระงาน');
+  await commit(F.updateDoc(ref('subjects', String(sid)), new F.FieldPath('tasks', String(taskId), 'status'), 'INACTIVE'));
+  return true;
+}
+
+export async function getTaskSubmissionData(subjectId, taskId) {
+  if (!subjectId) throw new Error('กรุณาเลือกวิชา');
+  const subject = await getSubject(subjectId);
+  const tasks = Object.values(subject.tasks || {}).filter(t => t.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
+  const currentTask = taskId ? tasks.find(t => String(t.task_id) === String(taskId)) : tasks[0];
+  const [students, book] = await Promise.all([
+    rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room),
+    read(ref('taskBook', String(subjectId)))
+  ]);
+  const map = currentTask ? (((book && book.tasks) || {})[currentTask.task_id] || {}) : {};
+  const rows = students.map(s => ({
+    student_id: s.student_id, first_name: s.first_name, last_name: s.last_name,
+    status_id: map[s.student_id] ? String(map[s.student_id].status_id) : '', remark: map[s.student_id] ? str(map[s.student_id].remark) : ''
+  }));
+  return { subject, tasks, currentTask: currentTask || null, statuses: S.taskStatuses, defaultStatus: (S.taskStatuses[0] || {}).status_id || 'SUBMITTED', rows };
+}
+
+export async function saveTaskSubmissions(payload) {
+  if (!payload || !payload.subject_id || !payload.task_id || !Array.isArray(payload.rows)) throw new Error('ข้อมูลการส่งงานไม่ถูกต้อง');
+  const records = {};
+  payload.rows.forEach(r => { if (r.status_id) records[String(r.student_id)] = { status_id: String(r.status_id), remark: str(r.remark) }; });
+  await commit(F.setDoc(ref('taskBook', String(payload.subject_id)), {
+    subject_id: String(payload.subject_id), tasks: { [String(payload.task_id)]: records }
+  }, { merge: true }));
+  return getTaskSubmissionData(payload.subject_id, payload.task_id);
+}
+
+export async function getTaskSummary(subjectId, maxBaseScore, preSubject, preBook, preStudents) {
+  if (!subjectId) throw new Error('กรุณาเลือกวิชา');
+  const subject = preSubject || await getSubject(subjectId);
+  const baseMax = (maxBaseScore != null && num(maxBaseScore) > 0) ? num(maxBaseScore) : 10;
+  const students = preStudents || await rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room);
+  const book = preBook !== undefined ? preBook : await read(ref('taskBook', String(subjectId)));
+  const tasks = Object.values(subject.tasks || {}).filter(t => t.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
+  const statuses = S.taskStatuses;
+  const statusMap = {}; statuses.forEach(s => statusMap[String(s.status_id)] = s);
+  const recTasks = (book && book.tasks) || {};
+  const taskIds = new Set(tasks.map(t => t.task_id));
+
+  const taskList = tasks.map(t => {
+    const counts = {}; let total = 0;
+    Object.values(recTasks[t.task_id] || {}).forEach(r => { const k = String(r.status_id); counts[k] = (counts[k] || 0) + 1; total++; });
+    return { task_id: t.task_id, task_name: t.task_name, due_date: t.due_date, counts, total };
+  });
+
+  const byStudent = {};
+  students.forEach(s => byStudent[s.student_id] = { student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, counts: {}, totalChecked: 0, scoreSum: 0 });
+  const overallCounts = {}; let totalRecords = 0;
+  Object.entries(recTasks).forEach(([tid, recs]) => {
+    // นับเฉพาะงานของวิชานี้ (รวมงานที่ถูกลบด้วย เหมือนระบบเดิม)
+    Object.entries(recs || {}).forEach(([sid, r]) => {
+      const k = String(r.status_id);
+      overallCounts[k] = (overallCounts[k] || 0) + 1; totalRecords++;
+      const st = byStudent[sid]; if (!st) return;
+      st.counts[k] = (st.counts[k] || 0) + 1; st.totalChecked++;
+      const sv = statusMap[k] ? num(statusMap[k].score_value) : 0;
+      st.scoreSum += Number.isFinite(sv) ? sv : 0;
+    });
+  });
+  void taskIds;
+  const totalTasks = tasks.length;
+  const maxPossibleScore = totalTasks;
+  const studentRows = students.map(s => {
+    const st = byStudent[s.student_id];
+    return {
+      student_id: st.student_id, first_name: st.first_name, last_name: st.last_name, counts: st.counts, totalChecked: st.totalChecked,
+      scoreSum: Math.round(st.scoreSum * 100) / 100, maxPossibleScore, baseMax,
+      earnedScore: maxPossibleScore > 0 ? Math.round((st.scoreSum / maxPossibleScore) * baseMax * 100) / 100 : 0,
+      taskScore: maxPossibleScore > 0 ? Math.round((st.scoreSum / maxPossibleScore) * 100 * 100) / 100 : 0
+    };
+  });
+  const submitted = overallCounts['SUBMITTED'] || 0;
+  return {
+    subject, statuses, totalTasks, baseMax, totalRecords, overallCounts,
+    submissionRate: totalRecords > 0 ? Math.round(submitted / totalRecords * 100) : 0,
+    taskList, students: studentRows
+  };
+}
+
+// ---------------------------------------------------------------------
+// คะแนนและการตัดเกรด (scoreSheets/{subjectId}.scores[sid][itemId])
+// ---------------------------------------------------------------------
+export function getGradeRules() { return S.gradeRules; }
+
+export async function getScoreEntryData(subjectId) {
+  if (!subjectId) throw new Error('กรุณาเลือกวิชา');
+  const subject = await getSubject(subjectId);
+  const items = Object.values(subject.items || {}).filter(i => i.status !== 'INACTIVE').sort((a, b) => num(a.sequence) - num(b.sequence));
+  const config = Object.assign({ subject_id: String(subjectId) }, defaultConfig(), subject.config || {}, { locked: toBool((subject.config || {}).locked) });
+  const needAtt = items.some(i => i.category === CATEGORIES.ATTENDANCE);
+  const needTask = items.some(i => i.category === CATEGORIES.TASKS);
+  const [students, sheet, attBook, taskBook] = await Promise.all([
+    rosterStudents(subject.semester, subject.academic_year, subject.level, subject.room),
+    read(ref('scoreSheets', String(subjectId))),
+    needAtt ? read(ref('attendanceBook', String(subjectId))) : null,
+    needTask ? read(ref('taskBook', String(subjectId))) : null
+  ]);
+  const scores = (sheet && sheet.scores) || {};
+  const statusMap = (sheet && sheet.statuses) || {};
+
+  const attPct = {};
+  if (needAtt) (await getAttendanceSummary(subjectId, subject, attBook, students)).students.forEach(st => {
+    attPct[st.student_id] = st.totalChecked > 0 ? st.attendanceScore / 10 : 0;
+  });
+  const taskPct = {};
+  if (needTask) (await getTaskSummary(subjectId, 10, subject, taskBook, students)).students.forEach(st => {
+    taskPct[st.student_id] = st.maxPossibleScore > 0 ? st.scoreSum / st.maxPossibleScore : 0;
+  });
+
+  const rows = students.map(s => {
+    const itemScores = {};
+    items.forEach(item => {
+      if (item.category === CATEGORIES.ATTENDANCE) {
+        itemScores[item.item_id] = Math.round((attPct[s.student_id] || 0) * num(item.max_score || 0) * 100) / 100;
+      } else if (item.category === CATEGORIES.TASKS) {
+        itemScores[item.item_id] = Math.round((taskPct[s.student_id] || 0) * num(item.max_score || 0) * 100) / 100;
+      } else {
+        const v = (scores[s.student_id] || {})[item.item_id];
+        itemScores[item.item_id] = (v === undefined || v === null) ? '' : v;
+      }
+    });
+    const statusInfo = statusMap[s.student_id];
+    const result = calculateStudentResult(items, itemScores, config, statusInfo);
+    return {
+      student_id: s.student_id, first_name: s.first_name, last_name: s.last_name, scores: itemScores,
+      total: result.total, grade: result.grade, point: result.point, status: result.status,
+      remark: statusInfo ? statusInfo.remark || '' : '', breakdown: result.breakdown
+    };
+  });
+  return { subject, items, rows, config, categories: CATEGORIES };
+}
+
+export async function saveScores(payload) {
+  if (!payload || !payload.subject_id || !Array.isArray(payload.rows)) throw new Error('ข้อมูลคะแนนไม่ถูกต้อง');
+  const subjectId = String(payload.subject_id);
+  const config = await getScoreConfig(subjectId);
+  if (config.locked) throw new Error('คะแนนวิชานี้ถูกล็อกแล้ว ไม่สามารถแก้ไขได้ กรุณาปลดล็อกก่อน');
+  const items = await getScoreItems(subjectId);
+  const update = {};
+  payload.rows.forEach(row => {
+    const sid = String(row.student_id);
+    items.forEach(item => {
+      if (item.category === CATEGORIES.ATTENDANCE || item.category === CATEGORIES.TASKS) return;
+      const raw = row.scores ? row.scores[item.item_id] : '';
+      update[sid] = update[sid] || {};
+      if (raw === '' || raw === null || raw === undefined) { update[sid][item.item_id] = F.deleteField(); return; }
+      const score = Number(raw);
+      if (!Number.isFinite(score)) throw new Error(`คะแนนของ ${sid} ไม่เป็นตัวเลข`);
+      if (score < 0 || score > num(item.max_score)) throw new Error(`คะแนน ${sid} ใน ${item.item_name} ต้องอยู่ระหว่าง 0-${item.max_score}`);
+      update[sid][item.item_id] = score;
+    });
+  });
+  await commit(F.setDoc(ref('scoreSheets', subjectId), { subject_id: subjectId, scores: update, updated_at: nowIso(), updated_by: S.me.email }, { merge: true }));
+  return getScoreEntryData(subjectId);
+}
+
+export function calculateStudentResult(items, itemScores, config, statusInfo) {
+  const status = statusInfo && statusInfo.status && statusInfo.status !== 'NORMAL' ? statusInfo.status : 'NORMAL';
+  const breakdown = {};
+  [CATEGORIES.CLASSWORK, CATEGORIES.ATTENDANCE, CATEGORIES.TASKS, CATEGORIES.MIDTERM, CATEGORIES.FINAL].forEach(cat => {
+    breakdown[cat] = calculateCategoryScore(items, itemScores, cat);
+  });
+  if (status !== 'NORMAL') return { total: 0, grade: STATUS_LABELS[status] || status, point: 0, breakdown, status };
+
+  const cfg = config || { classwork_weight: 40, midterm_weight: 20, final_weight: 40 };
+  const cw = breakdown[CATEGORIES.CLASSWORK], at = breakdown[CATEGORIES.ATTENDANCE], tk = breakdown[CATEGORIES.TASKS];
+  const totalCwRaw = (cw.raw || 0) + (at.raw || 0) + (tk.raw || 0);
+  const totalCwMax = (cw.max || 0) + (at.max || 0) + (tk.max || 0);
+  const effectiveCwPct = totalCwMax > 0 ? (totalCwRaw / totalCwMax) * 100 : (cw.pct || 0);
+  const weighted =
+    effectiveCwPct * num(cfg.classwork_weight || 0) / 100 +
+    breakdown[CATEGORIES.MIDTERM].pct * num(cfg.midterm_weight || 0) / 100 +
+    breakdown[CATEGORIES.FINAL].pct * num(cfg.final_weight || 0) / 100;
+  const total = Math.round(weighted * 100) / 100;
+  let grade = '-', point = 0;
+  for (const rule of S.gradeRules) {
+    if (total >= num(rule.min_score) && total <= num(rule.max_score)) { grade = rule.grade; point = num(rule.point); break; }
+  }
+  return { total, grade, point, breakdown, status: 'NORMAL' };
+}
+
+function calculateCategoryScore(items, itemScores, category) {
+  const catItems = items.filter(i => (i.category || CATEGORIES.CLASSWORK) === category);
+  const retake = catItems.filter(i => toBool(i.is_retake));
+  const regular = catItems.filter(i => !toBool(i.is_retake));
+  const has = v => v !== '' && v !== null && v !== undefined;
+  const hasRetake = retake.some(i => has(itemScores[i.item_id]));
+  const active = hasRetake ? retake : (regular.length ? regular : retake);
+  let raw = 0, max = 0;
+  active.forEach(i => { max += num(i.max_score) || 0; const v = itemScores[i.item_id]; if (has(v)) raw += num(v) || 0; });
+  const pct = max > 0 ? (raw / max) * 100 : 0;
+  return { raw, max, pct: Math.round(pct * 100) / 100 };
+}
+
+// ---------------------------------------------------------------------
+// รายงาน
+// ---------------------------------------------------------------------
+export async function getClassSummary(subjectId) {
+  const data = await getScoreEntryData(subjectId);
+  const counts = { '4': 0, '3.5': 0, '3': 0, '2.5': 0, '2': 0, '1.5': 0, '1': 0, '0': 0, 'ร': 0, 'มส': 0, '-': 0 };
+  let total = 0, graded = 0, normalCount = 0;
+  data.rows.forEach(r => {
+    const g = r.grade == null || r.grade === '' ? '-' : String(r.grade);
+    if (counts[g] === undefined) counts[g] = 0;
+    counts[g]++;
+    if (r.status === 'NORMAL') { total += num(r.total || 0); normalCount++; if (g !== '-') graded++; }
+  });
+  return { subject: data.subject, items: data.items, config: data.config, students: data.rows.length, average: normalCount ? total / normalCount : 0, graded, gradeCounts: counts, rows: data.rows };
+}
+export const getFullClassReport = getClassSummary;
+
+export async function getStudentGpa(studentId, semester, academicYear) {
+  const subjects = (await getSubjects(semester || S.term.sem, academicYear || S.term.yr)).filter(s => s.status !== 'INACTIVE');
+  const rows = []; let quality = 0, credits = 0;
+  for (const subject of subjects) {
+    const data = await getScoreEntryData(subject.subject_id);
+    const row = data.rows.find(r => String(r.student_id) === String(studentId));
+    if (!row) continue;
+    const credit = num(data.config.credit || 0);
+    rows.push({ subject_id: subject.subject_id, subject_name: subject.subject_name, credit, total: row.total, grade: row.grade, point: row.point, status: row.status, breakdown: row.breakdown });
+    if (credit > 0 && row.status === 'NORMAL') { quality += num(row.point || 0) * credit; credits += credit; }
+    else if (credit > 0 && row.status === 'ZERO') credits += credit;
+  }
+  return { rows, credits, gpa: credits ? quality / credits : 0 };
+}
+
+export async function getStudentFullReport(studentId, semester, academicYear) {
+  const student = (await getStudents(semester, academicYear)).find(s => String(s.student_id) === String(studentId));
+  if (!student) throw new Error('ไม่พบนักเรียน');
+  const g = await getStudentGpa(studentId, semester, academicYear);
+  return { student, rows: g.rows, credits: g.credits, gpa: g.gpa };
+}
+
+// ---------------------------------------------------------------------
+// บุคลากร / สิทธิ์
+// ---------------------------------------------------------------------
+export async function getUsers() {
+  requireAdmin();
+  const snap = await F.getDocs(F.collection(db, 'users'));
+  return snap.docs.map(d => Object.assign({ email: d.id }, d.data())).sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email), 'th'));
+}
+
+export async function saveUser(u) {
+  requireAdmin();
+  const email = str(u.email).toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('อีเมลไม่ถูกต้อง');
+  const homerooms = (Array.isArray(u.homerooms) ? u.homerooms : String(u.homerooms || '').split(','))
+    .map(x => str(x)).filter(Boolean)
+    .map(x => { const m = x.match(/^(.+?)\s*[\/|]\s*(.+)$/); return m ? `${m[1].trim()}|${m[2].trim()}` : null; })
+    .filter(Boolean);
+  if (email === S.me.email && u.role !== 'admin' && email !== BOOTSTRAP_ADMIN.toLowerCase()) throw new Error('ไม่สามารถถอดสิทธิ์ผู้ดูแลของตนเองได้');
+  const rec = { email, name: str(u.name) || email, role: u.role === 'admin' ? 'admin' : 'teacher', active: u.active !== false, homerooms, updatedAt: nowIso() };
+  await commit(F.setDoc(ref('users', email), rec, { merge: true }));
+  if (email === S.me.email) S.me.homerooms = homerooms;
+  return getUsers();
+}
+
+export async function deleteUser(email) {
+  requireAdmin();
+  const e = str(email).toLowerCase();
+  if (e === S.me.email || e === BOOTSTRAP_ADMIN.toLowerCase()) throw new Error('ลบบัญชีของตนเอง/ผู้ดูแลคนแรกไม่ได้');
+  await commit(F.deleteDoc(ref('users', e)));
+  return getUsers();
+}
+
+// ---------------------------------------------------------------------
+// ย้ายข้อมูลจาก Google Sheets เดิม (ไฟล์ .xlsx ที่ดาวน์โหลดจากชีต)
+// ---------------------------------------------------------------------
+export async function importLegacyWorkbook(sheets, opts = {}) {
+  requireAdmin();
+  const log = [];
+  const rowsOf = name => {
+    const raw = sheets[name] || [];
+    if (raw.length < 2) return [];
+    const headers = raw[0].map(h => str(h));
+    return raw.slice(1).map(r => { const o = {}; headers.forEach((h, i) => o[h] = r[i] === undefined ? '' : r[i]); return o; })
+      .filter(o => Object.values(o).some(v => v !== ''));
+  };
+  const isTermPart = v => /^\d{1,2}$/.test(str(v));
+  const isYear = v => /^\d{4}$/.test(str(v));
+  const ACT = new Set(['ACTIVE', 'INACTIVE']);
+
+  // ---- ตั้งค่า / ภาคเรียน ----
+  const settingsRows = rowsOf('Settings');
+  const st = {}; settingsRows.forEach(r => st[str(r.key)] = r.value);
+  let terms = [];
+  try { terms = JSON.parse(st.REGISTERED_TERMS || '[]'); } catch (e) { terms = String(st.REGISTERED_TERMS || '').split(',').map(x => x.trim()).filter(Boolean); }
+  const curSem = str(st.CURRENT_SEMESTER || '1'), curYr = str(st.CURRENT_YEAR || '2569');
+  if (!terms.includes(`${curSem}/${curYr}`)) terms.push(`${curSem}/${curYr}`);
+
+  // ---- นักเรียน (จัดเป็นห้อง) — เลียนแบบการกรองของระบบเดิม ----
+  const rosters = {}; const secrets = {}; let stuCount = 0, stuSkipped = 0;
+  rowsOf('Students').forEach(r => {
+    let status = str(r.status), sem = str(r.semester), yr = str(r.academic_year);
+    // แถวที่คอลัมน์เลื่อน (ระบบเดิมมองไม่เห็นแถวเหล่านี้) → ข้าม
+    if (!ACT.has(status) && status !== '') { stuSkipped++; return; }
+    if (status === 'INACTIVE') return;
+    const sid = str(r.student_id); if (!sid) return;
+    if ((sem && !isTermPart(sem)) || (yr && !isYear(yr))) { stuSkipped++; return; }
+    const targetTerms = (!sem || !yr) ? terms.map(t => t.split('/')).filter(([s, y]) => (!sem || s === sem) && (!yr || y === yr)) : [[sem, yr]];
+    targetTerms.forEach(([s, y]) => {
+      const id = rosterId(s, y, r.class_level, r.room);
+      rosters[id] = rosters[id] || { semester: s, academic_year: y, level: str(r.class_level), room: str(r.room), students: {} };
+      if (!rosters[id].students[sid]) stuCount++;
+      rosters[id].students[sid] = { student_id: sid, first_name: str(r.first_name), last_name: str(r.last_name), status: 'ACTIVE' };
+      if (str(r.citizen_id)) { secrets[id] = secrets[id] || {}; secrets[id][sid] = str(r.citizen_id); }
+    });
+  });
+  log.push(`นักเรียน ${stuCount} รายการ ใน ${Object.keys(rosters).length} ห้อง` + (stuSkipped ? ` (ข้ามแถวที่ข้อมูลไม่สมบูรณ์ ${stuSkipped} แถว)` : ''));
+
+  // ---- รายวิชา + สัดส่วน + องค์ประกอบ + งาน ----
+  const subjects = {};
+  rowsOf('Subjects').forEach(r => {
+    if (str(r.status) === 'INACTIVE') return;
+    const id = str(r.subject_id); if (!id) return;
+    subjects[id] = {
+      subject_id: id, subject_code: str(r.subject_code), subject_name: str(r.subject_name), level: str(r.level), room: str(r.room),
+      semester: str(r.semester || '1'), academic_year: str(r.academic_year || '2569'), max_score: num(r.max_score || 100), status: 'ACTIVE',
+      teachers: [opts.teacherEmail || S.me.email], config: defaultConfig(), items: {}, tasks: {}, updated_at: nowIso()
+    };
+  });
+  rowsOf('ScoreConfig').forEach(r => {
+    const s = subjects[str(r.subject_id)]; if (!s) return;
+    s.config = { credit: num(r.credit || 0), mode: str(r.mode || 'WEIGHT'), classwork_weight: num(r.classwork_weight || 40), midterm_weight: num(r.midterm_weight || 20), final_weight: num(r.final_weight || 40), locked: toBool(r.locked) };
+  });
+  let itemCount = 0;
+  rowsOf('ScoreItems').forEach(r => {
+    if (str(r.status) === 'INACTIVE') return;
+    const s = subjects[str(r.subject_id)]; if (!s) return;
+    const id = str(r.item_id) || uid(12);
+    s.items[id] = { item_id: id, subject_id: s.subject_id, item_name: str(r.item_name), category: str(r.category || CATEGORIES.CLASSWORK), max_score: num(r.max_score || 0), sequence: num(r.sequence || 1), status: 'ACTIVE', is_retake: toBool(r.is_retake), updated_at: nowIso() };
+    itemCount++;
+  });
+  let taskCount = 0;
+  rowsOf('Tasks').forEach(r => {
+    if (str(r.status) === 'INACTIVE') return;
+    const s = subjects[str(r.subject_id)]; if (!s) return;
+    const id = str(r.task_id) || uid(12);
+    s.tasks[id] = { task_id: id, subject_id: s.subject_id, task_name: str(r.task_name), due_date: normalizeDateStr(r.due_date), sequence: num(r.sequence || 1), status: 'ACTIVE', updated_at: nowIso() };
+    taskCount++;
+  });
+  log.push(`รายวิชา ${Object.keys(subjects).length} วิชา, องค์ประกอบคะแนน ${itemCount}, ภาระงาน ${taskCount}`);
+
+  // ---- คะแนน / สถานะ ร มส ----
+  const sheetsOut = {}; let scoreCount = 0;
+  rowsOf('Scores').forEach(r => {
+    const s = subjects[str(r.subject_id)]; if (!s) return;
+    if (!s.items[str(r.item_id)]) return;
+    if (r.score === '' || r.score === null) return;
+    const v = Number(r.score); if (!Number.isFinite(v)) return;
+    const sh = sheetsOut[s.subject_id] = sheetsOut[s.subject_id] || { subject_id: s.subject_id, scores: {}, statuses: {} };
+    (sh.scores[str(r.student_id)] = sh.scores[str(r.student_id)] || {})[str(r.item_id)] = v;
+    scoreCount++;
+  });
+  rowsOf('StudentStatus').forEach(r => {
+    const s = subjects[str(r.subject_id)]; if (!s) return;
+    const sh = sheetsOut[s.subject_id] = sheetsOut[s.subject_id] || { subject_id: s.subject_id, scores: {}, statuses: {} };
+    sh.statuses[str(r.student_id)] = { status: str(r.status || 'NORMAL'), remark: str(r.remark), updated_at: nowIso() };
+  });
+  log.push(`คะแนน ${scoreCount} รายการ`);
+
+  // ---- เช็คชื่อ / ส่งงาน ----
+  const attOut = {}; let attCount = 0;
+  rowsOf('Attendance').forEach(r => {
+    const s = subjects[str(r.subject_id)]; if (!s) return;
+    const d = normalizeDateStr(r.date); if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    const b = attOut[s.subject_id] = attOut[s.subject_id] || { subject_id: s.subject_id, days: {} };
+    (b.days[d] = b.days[d] || {})[str(r.student_id)] = { status_id: str(r.status_id), remark: str(r.remark) };
+    attCount++;
+  });
+  const taskOut = {}; let subCount = 0;
+  rowsOf('TaskSubmissions').forEach(r => {
+    const s = subjects[str(r.subject_id)]; if (!s) return;
+    const b = taskOut[s.subject_id] = taskOut[s.subject_id] || { subject_id: s.subject_id, tasks: {} };
+    (b.tasks[str(r.task_id)] = b.tasks[str(r.task_id)] || {})[str(r.student_id)] = { status_id: str(r.status_id), remark: str(r.remark) };
+    subCount++;
+  });
+  log.push(`เช็คชื่อ ${attCount} รายการ, การส่งงาน ${subCount} รายการ`);
+
+  // ---- สถานะ / เกณฑ์เกรด ----
+  const statusList = name => rowsOf(name).filter(r => str(r.status_id)).map(r => ({
+    status_id: str(r.status_id), label: str(r.label), color: str(r.color || '#7F2BE3'), sequence: num(r.sequence || 1),
+    status: str(r.status || 'ACTIVE'), score_value: (r.score_value === '' || r.score_value == null) ? 0 : num(r.score_value)
+  }));
+  const attStatuses = statusList('AttendanceStatuses');
+  const taskStatuses = statusList('TaskStatuses');
+  const gradeRules = rowsOf('GradeRules').filter(r => r.min_score !== '').map(r => ({ min_score: num(r.min_score), max_score: num(r.max_score), grade: str(r.grade), point: num(r.point) }));
+
+  if (opts.dryRun) return { ok: true, dryRun: true, log };
+
+  // ---- เขียนลง Firestore เป็นก้อน (ไม่เกิน 400 รายการต่อก้อน) ----
+  const ops = [];
+  ops.push([ref('meta', 'settings'), { SCHOOL_NAME: str(st.SCHOOL_NAME) || (S.settings && S.settings.SCHOOL_NAME) || '', CURRENT_SEMESTER: curSem, CURRENT_YEAR: curYr, REGISTERED_TERMS: terms }, true]);
+  if (gradeRules.length) ops.push([ref('meta', 'gradeRules'), { list: gradeRules }, false]);
+  if (attStatuses.length) ops.push([ref('meta', 'attendanceStatuses'), { list: attStatuses }, false]);
+  if (taskStatuses.length) ops.push([ref('meta', 'taskStatuses'), { list: taskStatuses }, false]);
+  Object.entries(rosters).forEach(([id, r]) => ops.push([ref('rosters', id), r, false]));
+  Object.entries(secrets).forEach(([id, c]) => ops.push([ref('rosterSecrets', id), { citizen: c }, false]));
+  Object.values(subjects).forEach(s => ops.push([ref('subjects', s.subject_id), s, false]));
+  Object.values(sheetsOut).forEach(sh => ops.push([ref('scoreSheets', sh.subject_id), Object.assign(sh, { updated_at: nowIso() }), false]));
+  Object.values(attOut).forEach(b => ops.push([ref('attendanceBook', b.subject_id), b, false]));
+  Object.values(taskOut).forEach(b => ops.push([ref('taskBook', b.subject_id), b, false]));
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = F.writeBatch(db);
+    ops.slice(i, i + 400).forEach(([r, data, merge]) => merge ? batch.set(r, data, { merge: true }) : batch.set(r, data));
+    await batch.commit();
+  }
+  log.push(`เขียนข้อมูลแล้ว ${ops.length} เอกสาร`);
+  await loadMeta();
+  return { ok: true, log };
+}
+
+// ให้หน้าเว็บ (สคริปต์ปกติ) เรียกใช้ได้
+export const _state = S;

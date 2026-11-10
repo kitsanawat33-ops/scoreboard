@@ -1,0 +1,122 @@
+rules_version = '2';
+
+// =====================================================================
+// PPJ ScoreBoard — Firestore Security Rules
+// กฎฝั่งเซิร์ฟเวอร์: ใครอ่าน/เขียนอะไรได้ (บังคับจริง ไม่ใช่แค่ซ่อนปุ่ม)
+//
+//  - ผู้ดูแลระบบ (admin)  : ทำได้ทุกอย่าง
+//  - ครู (teacher)        : เห็น/แก้เฉพาะรายวิชาที่มีชื่อตนใน teachers
+//  - ครูประจำชั้น          : เช็คชื่อประจำชั้นได้เฉพาะห้องใน homerooms ของตน
+//  - คนที่ไม่มีชื่อในบุคลากร หรือถูกระงับ : ไม่เห็นอะไรเลย
+// =====================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function bootstrapEmail() { return 'kitsanawat33@gmail.com'; }
+
+    // ---------- พื้นฐาน ----------
+    function p(rel) { return path('/databases/' + database + '/documents/' + rel); }
+    function signedIn() { return request.auth != null; }
+    function email() { return request.auth.token.get('email', '').lower(); }
+    function verified() { return signedIn() && request.auth.token.get('email_verified', false) == true; }
+    function isBootstrap() { return verified() && email() == bootstrapEmail(); }
+    function userPath() { return p('users/' + email()); }
+
+    // อ่านเอกสารบุคลากรครั้งเดียว แล้วคืนสิทธิ์ทั้งหมด
+    function me() {
+      let boot = isBootstrap();
+      let ex = verified() && exists(userPath());
+      let u = ex ? get(userPath()).data : {};
+      let act = ex && u.get('active', false) == true;
+      return {
+        'ok': act || boot,
+        'admin': boot || (act && u.get('role', '') == 'admin'),
+        'homerooms': act ? u.get('homerooms', []) : []
+      };
+    }
+    function isStaff() { return me().ok; }
+    function isAdmin() { return me().admin; }
+
+    // ---------- รายวิชา ----------
+    function subjectDoc(id) { return get(p('subjects/' + id)); }
+    function isSubjectTeacher(id) {
+      return isStaff() && exists(p('subjects/' + id)) && email() in subjectDoc(id).data.get('teachers', []);
+    }
+    function canSubject(id) { return isAdmin() || isSubjectTeacher(id); }
+    function subjectLocked(id) {
+      return exists(p('subjects/' + id)) && subjectDoc(id).data.get('config', {}).get('locked', false) == true;
+    }
+
+    // ---------- ตั้งค่าระบบ / สถานะ / เกณฑ์เกรด ----------
+    match /meta/{docId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // ---------- บุคลากร ----------
+    match /users/{uid} {
+      allow read: if isAdmin() || (verified() && uid == email());
+      // ผู้ดูแลคนแรกสร้างเอกสารของตนเองได้ครั้งแรก
+      allow create: if isAdmin() || (isBootstrap() && uid == email()
+                        && request.resource.data.role == 'admin' && request.resource.data.active == true);
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------- รายชื่อนักเรียนตามห้อง/ภาคเรียน ----------
+    match /rosters/{rosterId} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+    // เลขประจำตัวประชาชน — เฉพาะผู้ดูแล
+    match /rosterSecrets/{rosterId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ---------- รายวิชา (รวมสัดส่วน องค์ประกอบคะแนน และภาระงาน) ----------
+    match /subjects/{subjectId} {
+      allow read: if isAdmin() || (isStaff() && email() in resource.data.teachers);
+      allow create: if isAdmin()
+        || (isStaff() && request.resource.data.teachers == [email()]
+            && request.resource.data.subject_id == subjectId);
+      // ครูแก้วิชาของตนได้ แต่เปลี่ยนรายชื่อครูผู้สอนไม่ได้
+      allow update: if isAdmin()
+        || (isStaff() && email() in resource.data.teachers
+            && request.resource.data.teachers == resource.data.teachers
+            && request.resource.data.subject_id == resource.data.subject_id);
+      allow delete: if isAdmin();
+    }
+
+    // ---------- คะแนน + สถานะ ร/มส/0 (ล็อกแล้วแก้ไม่ได้) ----------
+    match /scoreSheets/{subjectId} {
+      allow read: if canSubject(subjectId);
+      allow write: if canSubject(subjectId) && !subjectLocked(subjectId);
+    }
+
+    // ---------- เช็คชื่อรายวิชา / ส่งงาน (หนึ่งเอกสารต่อวิชา) ----------
+    match /attendanceBook/{subjectId} {
+      allow read, write: if canSubject(subjectId);
+    }
+    match /taskBook/{subjectId} {
+      allow read, write: if canSubject(subjectId);
+    }
+
+    // ---------- เช็คชื่อประจำชั้น (หนึ่งเอกสารต่อห้องต่อภาคเรียน) ----------
+    // rosterId = ภาคเรียน_ปี_ชั้น_ห้อง เช่น 2_2569_ม.4_1
+    match /homeroomBook/{rosterId} {
+      // ครูทุกคนอ่านได้ เพื่อแสดงป้าย "เช้า: ลา" ในหน้าเช็คชื่อรายวิชา
+      allow read: if isStaff();
+      allow write: if isAdmin() || (
+        isStaff()
+        && (request.resource.data.level + '|' + request.resource.data.room) in me().homerooms
+        && rosterId == request.resource.data.semester + '_' + request.resource.data.academic_year + '_'
+                       + request.resource.data.level + '_' + request.resource.data.room
+      );
+    }
+
+    // อย่างอื่นปิดทั้งหมด
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,38 @@
+# Deploy หน้าเว็บ + กฎความปลอดภัย ขึ้น Firebase (โปรเจกต์ ppj-scoreboard) ทุกครั้งที่ push เข้า branch firebase
+name: Deploy to Firebase
+
+on:
+  push:
+    branches: [firebase]
+  workflow_dispatch:
+
+concurrency:
+  group: firebase-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check secret
+        id: chk
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SA" ]; then
+            echo "ยังไม่ได้ตั้งค่า secret FIREBASE_SERVICE_ACCOUNT — ข้ามการ deploy"; echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"; echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Deploy hosting + firestore rules
+        if: steps.chk.outputs.ok == 'true'
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/sa.json
+        run: npx --yes firebase-tools@14 deploy --only hosting,firestore:rules --project ppj-scoreboard --non-interactive
+      - name: Clean up key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/sa.json"

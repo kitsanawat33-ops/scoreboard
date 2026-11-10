@@ -1618,6 +1618,145 @@ async function saveSubjectForm(){
   });
   fillTermSelects(); fillSubjectSelects(); renderSubjects(); closeModal(); toast('บันทึกรายวิชาแล้ว'); renderDashboardStats();
 }
+/* ===================== นำเข้ารายวิชาจากไฟล์ตารางสอน (.json จากระบบจัดตารางสอน) ===================== */
+let tt = null;          // ข้อมูลไฟล์
+let ttRows = [];        // [{key, level, room, code, name, credit, teacherIds, teacherNames, emails, selected, exists}]
+
+const NAME_PREFIX = /^(นางสาว|นาง|นาย|น\.ส\.|ว่าที่\s*ร\.?\s*ต\.?\s*(หญิง)?|ว่าที่ร้อยตรี(หญิง)?|ดร\.|ครู|Mr\.?|Mrs\.?|Ms\.?|Miss)\s*/i;
+function normName(n){ let x = String(n || '').trim(); for (let i = 0; i < 3; i++) x = x.replace(NAME_PREFIX, ''); return x.replace(/\s+/g, ''); }
+
+async function openSubjectImportModal(){
+  if (!isAdminUI()) return toast('ทำได้เฉพาะผู้ดูแลระบบ', 'error');
+  tt = null; ttRows = [];
+  if (!usersCache.length) { try { usersCache = await API.getUsers(); } catch (e) {} }
+  document.getElementById('modalTitle').textContent = `นำเข้ารายวิชา • ภาคเรียน ${state.currentSemester}/${state.currentYear}`;
+  document.getElementById('modalBody').innerHTML = `
+    <div class="info-box">ใช้ไฟล์ <b>.json</b> ที่ส่งออกจากระบบจัดตารางสอน — ระบบจะสร้างรายวิชาแยกตามห้อง (เช่น ม.4/1, ม.4/2)
+      และจับคู่ครูผู้สอนกับรายชื่อในเมนู "บุคลากร / สิทธิ์" ด้วยชื่อ-สกุล<br>
+      วิชาที่มีอยู่แล้ว (รหัส ชื่อ ชั้น ห้องเดียวกัน) จะไม่ถูกสร้างซ้ำ และคะแนนเดิมไม่ถูกแตะต้อง</div>
+    <div class="form-row"><label>เลือกไฟล์ (.json)</label><input type="file" id="ttFile" accept=".json,application/json" onchange="readTimetableFile()"></div>
+    <div id="ttTermRow" class="form-row" style="display:none"><label>ภาคเรียนในไฟล์</label><select id="ttTerm" onchange="buildTimetableRows()"></select></div>
+    <div id="ttPreview"></div>
+    <div class="import-opts">
+      <label><input type="checkbox" id="tt_update" checked> วิชาที่มีอยู่แล้ว: อัปเดตหน่วยกิตและครูผู้สอน (ถ้าจับคู่ครูได้)</label>
+    </div>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">ยกเลิก</button>
+      <button class="primary" id="ttGoBtn" onclick="processSubjectImport()" disabled>นำเข้า</button>
+    </div>`;
+  openModal();
+}
+
+async function readTimetableFile(){
+  const f = document.getElementById('ttFile').files[0];
+  if (!f) return;
+  try {
+    const d = JSON.parse(await f.text());
+    if (!Array.isArray(d.subjects) || !Array.isArray(d.terms)) throw new Error('ไม่ใช่ไฟล์ที่ส่งออกจากระบบจัดตารางสอน (ไม่พบ subjects/terms)');
+    tt = d;
+    const cur = `${state.currentYear}-${state.currentSemester}`;
+    const terms = d.terms.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+    const sel = document.getElementById('ttTerm');
+    sel.innerHTML = terms.map(t => `<option value="${esc(t.id)}">${esc(t.label || t.id)} (${d.subjects.filter(s => s.termId === t.id).length} วิชา)</option>`).join('');
+    sel.value = terms.some(t => t.id === cur) ? cur : terms[terms.length - 1].id;
+    document.getElementById('ttTermRow').style.display = '';
+    buildTimetableRows();
+  } catch (e) {
+    document.getElementById('ttPreview').innerHTML = `<div class="empty">อ่านไฟล์ไม่สำเร็จ: ${esc(e.message || e)}</div>`;
+  }
+}
+
+function buildTimetableRows(){
+  const termId = v('ttTerm');
+  const teachers = {};
+  (tt.teachers || []).forEach(t => { teachers[t.id] = t; });
+  const byName = {};
+  usersCache.filter(u => u.active !== false).forEach(u => { const k = normName(u.name); if (k) byName[k] = u.email; });
+  const [yr, sem] = termId.split('-');
+  const existing = new Set(state.subjects.filter(s => s.status !== 'INACTIVE' && String(s.semester) === String(state.currentSemester) && String(s.academic_year) === String(state.currentYear))
+    .map(s => [s.subject_code, s.subject_name, s.level, s.room].map(x => String(x || '').trim()).join('|')));
+  ttRows = [];
+  tt.subjects.filter(s => s.termId === termId).sort((a, b) => (a.level - b.level) || ((a.order || 0) - (b.order || 0))).forEach(s => {
+    const level = /^\d+$/.test(String(s.level)) ? `ม.${s.level}` : String(s.level);
+    let rooms = [1, 2, 3].filter(r => s['room' + r]);
+    if (!rooms.length) rooms = Array.from({ length: Number(s.rooms) || 1 }, (_, i) => i + 1);
+    rooms.forEach(r => {
+      const t = teachers[s['room' + r]];
+      const tName = t ? `${t.prefix || ''}${t.firstName || ''} ${t.lastName || ''}`.trim() : '';
+      const email = t ? byName[normName(`${t.firstName || ''}${t.lastName || ''}`)] : '';
+      const row = { level, room: String(r), code: String(s.code || '').trim(), name: String(s.name || '').trim(), credit: Number(s.unit) || 0,
+        teacherName: tName, email: email || '', note: s.combine ? `เรียนรวมห้อง ${s.combine}` : (s.note === 'วิทย์' ? 'สายวิทย์' : s.note === 'ศิลป์' ? 'สายศิลป์' : (s.note || '')) };
+      row.exists = existing.has([row.code, row.name, row.level, row.room].join('|'));
+      row.selected = true;
+      ttRows.push(row);
+    });
+  });
+  renderTimetablePreview();
+}
+
+function renderTimetablePreview(){
+  const box = document.getElementById('ttPreview');
+  if (!ttRows.length) { box.innerHTML = '<div class="empty">ไม่พบรายวิชาในภาคเรียนนี้</div>'; document.getElementById('ttGoBtn').disabled = true; return; }
+  const groups = {};
+  ttRows.forEach((r, i) => { (groups[`${r.level}/${r.room}`] = groups[`${r.level}/${r.room}`] || []).push(i); });
+  const keys = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'th', { numeric: true }));
+  const sel = ttRows.filter(r => r.selected);
+  const nNew = sel.filter(r => !r.exists).length, nOld = sel.length - nNew;
+  const noT = sel.filter(r => !r.email).length;
+  const unmatched = [...new Set(ttRows.filter(r => r.teacherName && !r.email).map(r => r.teacherName))];
+  box.innerHTML = `
+    <div class="import-head"><b>พบ ${ttRows.length} รายวิชา-ห้อง ใน ${keys.length} ห้อง</b>
+      <span><button class="small-btn" onclick="selectTimetable(null,true)">เลือกทั้งหมด</button>
+      <button class="small-btn" onclick="selectTimetable(null,false)">ไม่เลือกเลย</button></span></div>
+    <div class="import-list">${keys.map(k => {
+      const idx = groups[k], on = idx.filter(i => ttRows[i].selected).length;
+      return `<details class="tt-group">
+        <summary class="import-item">
+          <input type="checkbox" ${on === idx.length ? 'checked' : ''} onclick="event.stopPropagation()" onchange="selectTimetable('${esc(k)}',this.checked)">
+          <span class="ii-main"><b>ชั้น ${esc(k)}</b> <small>${on}/${idx.length} วิชา • กดเพื่อดูรายวิชา</small></span>
+          <span class="ii-count">${idx.length} วิชา</span>
+        </summary>
+        ${idx.map(i => { const r = ttRows[i]; return `
+          <label class="tt-sub">
+            <input type="checkbox" ${r.selected ? 'checked' : ''} onchange="ttRows[${i}].selected=this.checked;renderTimetablePreview()">
+            <span class="ii-main">${esc(r.code)} ${esc(r.name)} <small>${r.credit} นก.${r.note ? ' • ' + esc(r.note) : ''}</small>
+              <small class="${r.email ? 'tt-ok' : 'ii-note'}">${r.email ? '👤 ' + esc(teacherName(r.email)) : (r.teacherName ? '⚠️ ' + esc(r.teacherName) + ' — ยังไม่มีในบุคลากร' : '⚠️ ไม่ระบุครู')}</small></span>
+            ${r.exists ? '<span class="tt-tag">มีแล้ว</span>' : ''}
+          </label>`; }).join('')}
+      </details>`; }).join('')}</div>
+    <p class="import-sum">จะสร้างวิชาใหม่ <b>${nNew}</b> วิชา${nOld ? ` • มีอยู่แล้ว ${nOld} วิชา` : ''} เข้าภาคเรียน <b>${esc(state.currentSemester)}/${esc(state.currentYear)}</b>
+      ${noT ? `<br><span style="color:#8A5A00">⚠️ ${noT} วิชายังไม่มีครูผู้สอนในระบบ — ผู้ดูแลเห็นได้ และกำหนดครูภายหลังได้ที่หน้ารายวิชา</span>` : ''}
+      ${unmatched.length ? `<br><small style="color:var(--ink-soft)">ครูที่ยังไม่มีในเมนูบุคลากร: ${unmatched.map(esc).join(', ')} — เพิ่มอีเมลครูก่อนแล้วนำเข้าซ้ำ ระบบจะใส่ครูให้วิชาที่มีอยู่แล้ว</small>` : ''}</p>`;
+  if (`${tt && v('ttTerm')}` !== `${state.currentYear}-${state.currentSemester}`)
+    box.insertAdjacentHTML('afterbegin', `<div class="info-box" style="background:#FFF4E0;color:#8A5A00">ภาคเรียนในไฟล์ไม่ตรงกับภาคเรียนปัจจุบันของระบบ (${esc(state.currentSemester)}/${esc(state.currentYear)}) — วิชาจะถูกนำเข้าไปที่ภาคเรียนปัจจุบัน ถ้าไม่ต้องการให้สลับภาคเรียนก่อน</div>`);
+  document.getElementById('ttGoBtn').disabled = sel.length === 0;
+  // คงสถานะการกางรายการไว้
+  (window.__ttOpen || []).forEach(k => { const d = [...box.querySelectorAll('details')].find(x => x.querySelector('b').textContent === 'ชั้น ' + k); if (d) d.open = true; });
+  box.querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => {
+    window.__ttOpen = [...box.querySelectorAll('details[open] summary b')].map(b => b.textContent.replace('ชั้น ', ''));
+  }));
+}
+function selectTimetable(key, on){
+  ttRows.forEach(r => { if (!key || `${r.level}/${r.room}` === key) r.selected = on; });
+  renderTimetablePreview();
+}
+
+async function processSubjectImport(){
+  const rows = ttRows.filter(r => r.selected);
+  if (!rows.length) return toast('กรุณาเลือกอย่างน้อย 1 วิชา', 'error');
+  const update = document.getElementById('tt_update').checked;
+  const nNew = rows.filter(r => !r.exists).length;
+  if (!confirm(`ยืนยันนำเข้ารายวิชา ${rows.length} รายการ (ใหม่ ${nNew}) เข้าภาคเรียน ${state.currentSemester}/${state.currentYear}?`)) return;
+  try {
+    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, credit: r.credit, teachers: r.email ? [r.email] : [] })),
+      { semester: state.currentSemester, academicYear: state.currentYear, update });
+    state.subjects = res.subjects;
+    fillTermSelects(); fillSubjectSelects(); renderSubjects(); renderDashboardStats();
+    closeModal();
+    toast(`สร้างวิชาใหม่ ${res.created} วิชา` + (res.updated ? ` • อัปเดต ${res.updated} วิชา` : '') + (res.skipped ? ` • ข้าม ${res.skipped} วิชา` : ''));
+  } catch (e) {}
+}
+
 async function removeSubject(id){
   if(!confirm('ยืนยันการลบรายวิชา?')) return;
   state.subjects = await gas('deleteSubject', id, state.currentSemester, state.currentYear);

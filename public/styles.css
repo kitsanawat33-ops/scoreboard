@@ -825,3 +825,13 @@ body.no-scroll { overflow: hidden; }
 .import-opts input { width: auto; min-height: 0; margin-right: 6px; vertical-align: middle; }
 .ii-fix { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 12px; color: var(--ink-soft); }
 .ii-fix input { width: 56px; min-height: 0; padding: 3px 6px; font-size: 12px; }
+
+/* ---------- นำเข้ารายวิชา ---------- */
+.tt-group > summary { list-style: none; }
+.tt-group > summary::-webkit-details-marker { display: none; }
+.tt-group[open] > summary { background: var(--fb-blue-soft, #EAF3FF); }
+.tt-sub { display: flex; align-items: center; gap: 10px; padding: 7px 12px 7px 34px; border-bottom: 1px solid var(--line-light); font-size: 13px; cursor: pointer; }
+.tt-sub input { width: 16px; height: 16px; min-height: 0; flex: none; }
+.tt-sub small { display: block; color: var(--ink-soft); margin-left: 0; }
+.tt-sub .tt-ok { color: #1A7F4B; }
+.tt-tag { font-size: 11px; background: #EEF0F4; color: var(--ink-soft); padding: 2px 8px; border-radius: 99px; white-space: nowrap; }

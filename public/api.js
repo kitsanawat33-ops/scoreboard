@@ -684,6 +684,50 @@ export async function saveSubject(subject) {
   return getSubjects(sem, yr);
 }
 
+// นำเข้ารายวิชาหลายรายการ (จากไฟล์ตารางสอน) — วิชาที่มีอยู่แล้วไม่สร้างซ้ำ คะแนน/องค์ประกอบเดิมไม่ถูกแตะต้อง
+export async function importSubjects(list, opts = {}) {
+  requireAdmin();
+  const sem = str(opts.semester || S.term.sem), yr = str(opts.academicYear || S.term.yr);
+  if (!Array.isArray(list) || !list.length) throw new Error('ไม่มีรายวิชาที่เลือก');
+  const q = F.query(F.collection(db, 'subjects'), F.where('semester', '==', sem), F.where('academic_year', '==', yr));
+  const current = (await F.getDocs(q)).docs.map(d => d.data()).filter(s => s.status !== 'INACTIVE');
+  const key = s => [s.subject_code, s.subject_name, s.level, s.room].map(str).join('|');
+  const have = new Map(current.map(s => [key(s), s]));
+  const ops = [];
+  let created = 0, updated = 0, skipped = 0;
+  list.forEach(x => {
+    const rec = { subject_code: str(x.subject_code), subject_name: str(x.subject_name), level: str(x.level), room: str(x.room || '1') };
+    if (!rec.subject_name || !rec.level) { skipped++; return; }
+    const teachers = (x.teachers || []).map(e => str(e).toLowerCase()).filter(Boolean);
+    const credit = Number(x.credit) || 0;
+    const prev = have.get(key(rec));
+    if (prev) {
+      if (!opts.update) { skipped++; return; }
+      const patch = { updated_at: nowIso() };
+      if (credit) patch.config = Object.assign({}, prev.config || {}, { credit });
+      if (teachers.length) patch.teachers = [...new Set([...(prev.teachers || []), ...teachers])];
+      ops.push([ref('subjects', prev.subject_id), patch, true]);
+      Object.assign(prev, patch);
+      updated++;
+      return;
+    }
+    const id = uid(10);
+    const doc = Object.assign({ config: Object.assign(defaultConfig(), credit ? { credit } : {}), items: {}, tasks: {} }, rec, {
+      subject_id: id, semester: sem, academic_year: yr, max_score: 100, status: 'ACTIVE',
+      teachers, updated_at: nowIso(), source: 'timetable'
+    });
+    ops.push([ref('subjects', id), doc, false]);
+    have.set(key(rec), doc);
+    created++;
+  });
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = F.writeBatch(db);
+    ops.slice(i, i + 400).forEach(([r, d, merge]) => merge ? batch.set(r, d, { merge: true }) : batch.set(r, d));
+    await commit(batch.commit());
+  }
+  return { ok: true, created, updated, skipped, subjects: await getSubjects(sem, yr) };
+}
+
 export async function deleteSubject(subjectId, semester, academicYear) {
   await commit(F.updateDoc(ref('subjects', String(subjectId)), { status: 'INACTIVE', updated_at: nowIso() }));
   return getSubjects(semester || S.term.sem, academicYear || S.term.yr);

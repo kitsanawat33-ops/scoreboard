@@ -1840,45 +1840,193 @@ function parseCSV(text){
   return rows;
 }
 
+/* ===================== นำเข้ารายชื่อนักเรียน (CSV จาก SchoolMIS / ไฟล์ใบรายชื่อ .xlsx / CSV แบบเดิม) ===================== */
+let importGroups = [];   // [{key, level, room, source, students:[...], selected, note}]
+
 function openImportModal() {
-  document.getElementById('modalTitle').textContent = `นำเข้าข้อมูลนักเรียน (CSV) ภาคเรียน ${state.currentSemester}/${state.currentYear}`;
+  if (!isAdminUI()) return toast('การนำเข้ารายชื่อทำได้เฉพาะผู้ดูแลระบบ', 'error');
+  importGroups = [];
+  document.getElementById('modalTitle').textContent = `นำเข้ารายชื่อนักเรียน • ภาคเรียน ${state.currentSemester}/${state.currentYear}`;
   document.getElementById('modalBody').innerHTML = `
-    <div class="form-grid">
-      <div class="form-row"><label>ระดับชั้น (เช่น ม.5)</label><input id="import_level" value="ม.5"></div>
-      <div class="form-row"><label>ห้อง (เช่น 2)</label><input id="import_room" value="2"></div>
+    <div class="info-box">รองรับ 3 แบบ: <b>CSV รายชื่อจาก SchoolMIS</b> (มีคอลัมน์ ระดับชั้น/ห้อง) •
+      <b>ไฟล์ใบรายชื่อ .xlsx</b> (1 แผ่นงานต่อห้อง) • <b>CSV แบบเดิม</b> (รหัสนักเรียน, ชื่อ, นามสกุล — ต้องระบุชั้น/ห้องเอง)<br>
+      ระบบอ่านเฉพาะ เลขประจำตัว คำนำหน้า ชื่อ สกุล ชั้น ห้อง ข้อมูลอื่น (วันเกิด ที่อยู่ ฯลฯ) จะไม่ถูกนำเข้า</div>
+    <div class="form-row"><label>เลือกไฟล์ (.csv หรือ .xlsx)</label><input type="file" id="stuFile" accept=".csv,.xlsx,text/csv" onchange="readStudentFile()"></div>
+    <div id="importFallback" class="form-grid" style="display:none">
+      <div class="form-row"><label>ระดับชั้น (เช่น ม.5)</label><input id="import_level" value="ม.5" oninput="readStudentFile()"></div>
+      <div class="form-row"><label>ห้อง (เช่น 2)</label><input id="import_room" value="1" oninput="readStudentFile()"></div>
     </div>
-    <div class="form-row" style="margin-top: 15px;">
-      <label>เลือกไฟล์ CSV</label>
-      <input type="file" id="csvFileInput" accept=".csv,text/csv">
+    <div id="importPreview"></div>
+    <div class="import-opts">
+      <label><input type="checkbox" id="imp_replace"> แทนที่รายชื่อเดิมของห้องที่เลือก (นักเรียนที่ไม่มีในไฟล์จะถูกปิดใช้งานในภาคเรียนนี้)</label>
+      <label><input type="checkbox" id="imp_citizen"> นำเข้าเลขประจำตัวประชาชนด้วย (เก็บแยก อ่านได้เฉพาะผู้ดูแล — ถ้าไม่จำเป็นแนะนำไม่ต้องติ๊ก)</label>
     </div>
     <div class="modal-actions">
       <button class="secondary" onclick="closeModal()">ยกเลิก</button>
-      <button class="primary" onclick="processImportCsv()">อัปโหลดและนำเข้า</button>
-    </div>
-  `;
+      <button class="primary" id="importGoBtn" onclick="processImportStudents()" disabled>นำเข้า</button>
+    </div>`;
   openModal();
 }
 
-function processImportCsv() {
-  const fileInput = document.getElementById('csvFileInput');
-  const file = fileInput.files[0];
-  if (!file) return toast('กรุณาเลือกไฟล์', 'error');
-  
-  const level = v('import_level');
-  const room = v('import_room');
+const THAI_DIGITS = '๐๑๒๓๔๕๖๗๘๙';
+function thaiToArabic(s){ return String(s ?? '').replace(/[๐-๙]/g, d => String(THAI_DIGITS.indexOf(d))); }
+function cleanCell(v){ return thaiToArabic(String(v ?? '')).replace(/\s+/g, ' ').trim(); }
 
-  const reader = new FileReader();
-  reader.onload = async ev => {
-    try {
-      const rows = parseCSV(ev.target.result);
-      const result = await gas('importStudents', rows, level, room, state.currentSemester, state.currentYear);
-      state.students = result.students;
-      renderStudents(); fillReportStudents(); renderDashboardStats();
-      closeModal();
-      toast(`นำเข้านักเรียน ${result.count} คนในเทอม ${state.currentSemester}/${state.currentYear} แล้ว`);
-    } catch(err) { toast(err.message, 'error'); }
+// "มัธยมศึกษาปีที่ 4/1" "ประถมศึกษาปีที่ 1" "อนุบาลปีที่ 2" "ม.4.1" "ม1.2" "ป.6" → {level, room}
+function parseClassText(text){
+  const t = cleanCell(text);
+  let m = t.match(/(มัธยมศึกษาปีที่|ประถมศึกษาปีที่|อนุบาลปีที่)\s*(\d+)\s*(?:\/\s*(\d+))?/);
+  if (m) return { level: ({'มัธยมศึกษาปีที่':'ม.','ประถมศึกษาปีที่':'ป.','อนุบาลปีที่':'อ.'})[m[1]] + m[2], room: m[3] || '1' };
+  m = t.match(/^(ม|ป|อ)\.?\s*(\d+)(?:\s*[.\/]\s*(\d+))?\s*$/);
+  if (m) return { level: `${m[1]}.${m[2]}`, room: m[3] || '1' };
+  return null;
+}
+
+function findHeader(rows, need){
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const h = (rows[i] || []).map(cleanCell);
+    if (need.every(n => h.some(x => n.test(x)))) return i;
+  }
+  return -1;
+}
+function colIdx(h, re){ return h.findIndex(x => re.test(x)); }
+
+function rowsToStudents(rows, hdrIdx){
+  const h = rows[hdrIdx].map(cleanCell);
+  const c = {
+    sid: colIdx(h, /^(เลขประจำตัว(นักเรียน)?|รหัสนักเรียน)$/),
+    cid: colIdx(h, /^(เลข\s*ปปช\.?|เลข\s*ปชช\.?|เลขประชาชน|เลขประจำตัวประชาชน)$/),
+    pre: colIdx(h, /^(คำนำหน้า|คำหน้าชื่อ)/),
+    fn:  colIdx(h, /^ชื่อ$/),
+    ln:  colIdx(h, /^(สกุล|นามสกุล)$/),
+    lv:  colIdx(h, /^ระดับชั้น$/),
+    rm:  colIdx(h, /^ห้อง$/)
   };
-  reader.readAsText(file, 'UTF-8');
+  const out = [];
+  rows.slice(hdrIdx + 1).forEach(r => {
+    const sid = cleanCell(r[c.sid]);
+    if (!/^\d{1,10}$/.test(sid)) return;
+    const fn = cleanCell(r[c.fn]); if (!fn) return;
+    out.push({
+      student_id: sid, prefix: c.pre >= 0 ? cleanCell(r[c.pre]) : '', first_name: fn, last_name: c.ln >= 0 ? cleanCell(r[c.ln]) : '',
+      citizen_id: c.cid >= 0 ? cleanCell(r[c.cid]).replace(/\D/g, '') : '',
+      level: c.lv >= 0 ? cleanCell(r[c.lv]) : '', room: c.rm >= 0 ? cleanCell(r[c.rm]) : ''
+    });
+  });
+  return out;
+}
+
+function groupBy(students, source){
+  const g = {};
+  students.forEach(s => {
+    const lv = parseClassText(s.level) || { level: s.level, room: s.room || '1' };
+    const level = lv.level, room = s.room || lv.room || '1';
+    const key = `${level}|${room}`;
+    (g[key] = g[key] || { key, level, room, source, students: [] }).students.push(s);
+  });
+  return Object.values(g);
+}
+
+async function readStudentFile(){
+  const f = document.getElementById('stuFile').files[0];
+  if (!f) return;
+  const fb = document.getElementById('importFallback');
+  fb.style.display = 'none';
+  importGroups = [];
+  try {
+    showLoading(true);
+    if (/\.xlsx$/i.test(f.name)) {
+      await loadXlsxLib();
+      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+      wb.SheetNames.forEach(name => {
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+        const hi = findHeader(rows, [/^(เลขประจำตัว|รหัสนักเรียน)$/, /^ชื่อ$/]);
+        if (hi < 0) return;
+        const students = rowsToStudents(rows, hi);
+        if (!students.length) return;
+        if (students.some(s => s.level)) { groupBy(students, `แผ่นงาน ${name}`).forEach(g => importGroups.push(g)); return; }
+        // ใบรายชื่อ: ชั้น/ห้องอยู่ในหัวกระดาษ หรือชื่อแผ่นงาน
+        let cls = null;
+        for (let i = 0; i < hi && !cls; i++) cls = parseClassText((rows[i] || []).join(' '));
+        const fromName = parseClassText(name);
+        if (!cls) cls = fromName;
+        const dup = /\(\d+\)\s*$/.test(name);
+        importGroups.push({ key: `${name}`, level: cls ? cls.level : '', room: cls ? cls.room : '', source: `แผ่นงาน ${name}`, students,
+          manual: !cls, note: !cls ? 'ไม่พบชั้น/ห้องในแผ่นงานนี้ — ระบุเองได้' : (dup ? 'ชื่อแผ่นงานมี (2) — อาจเป็นฉบับเก่า/สำเนา' : '') });
+      });
+    } else {
+      const text = await f.text();
+      const rows = parseCSV(text.replace(/^﻿/, ''));
+      const hi = findHeader(rows, [/^(เลขประจำตัว(นักเรียน)?|รหัสนักเรียน)$/, /^ชื่อ$/]);
+      if (hi < 0) throw new Error('ไม่พบหัวคอลัมน์ เลขประจำตัว/รหัสนักเรียน และ ชื่อ');
+      const students = rowsToStudents(rows, hi);
+      if (students.some(s => s.level)) importGroups = groupBy(students, 'CSV');
+      else {
+        fb.style.display = '';
+        const level = cleanCell(v('import_level')), room = cleanCell(v('import_room'));
+        importGroups = [{ key: `${level}|${room}`, level, room, source: 'CSV แบบเดิม', students }];
+      }
+    }
+    // เลือกไว้ก่อน: ห้องที่ทราบชั้น และไม่ใช่แผ่นงานสำเนา
+    importGroups.sort((a, b) => (a.level + '/' + a.room).localeCompare(b.level + '/' + b.room, 'th', { numeric: true }));
+    importGroups.forEach(g => g.selected = !!g.level && !(g.note || '').includes('(2)'));
+    renderImportPreview();
+  } catch (e) {
+    document.getElementById('importPreview').innerHTML = `<div class="empty">อ่านไฟล์ไม่สำเร็จ: ${esc(e.message || e)}</div>`;
+  } finally { showLoading(false); }
+}
+
+function renderImportPreview(){
+  const box = document.getElementById('importPreview');
+  if (!importGroups.length) { box.innerHTML = '<div class="empty">ไม่พบรายชื่อนักเรียนในไฟล์</div>'; document.getElementById('importGoBtn').disabled = true; return; }
+  const dupIds = {};
+  importGroups.filter(g => g.selected).forEach(g => g.students.forEach(s => { dupIds[s.student_id] = (dupIds[s.student_id] || 0) + 1; }));
+  const dups = Object.values(dupIds).filter(n => n > 1).length;
+  const total = importGroups.filter(g => g.selected).reduce((a, g) => a + g.students.length, 0);
+  box.innerHTML = `
+    <div class="import-head">
+      <b>พบ ${importGroups.length} กลุ่ม</b>
+      <span><button class="small-btn" onclick="selectImportGroups(true)">เลือกทั้งหมด</button>
+      <button class="small-btn" onclick="selectImportGroups(false)">ไม่เลือกเลย</button></span>
+    </div>
+    <div class="import-list">${importGroups.map((g, i) => `
+      <label class="import-item${g.level ? '' : ' disabled'}">
+        <input type="checkbox" ${g.selected ? 'checked' : ''} ${g.level ? '' : 'disabled'} onchange="importGroups[${i}].selected=this.checked;renderImportPreview()">
+        <span class="ii-main"><b>${g.level ? `ชั้น ${esc(g.level)}/${esc(g.room)}` : 'ไม่ทราบชั้น'}</b> <small>${esc(g.source)}</small>
+        ${g.note ? `<small class="ii-note">⚠️ ${esc(g.note)}</small>` : ''}
+        ${g.manual ? `<span class="ii-fix" onclick="event.preventDefault()">ระบุชั้น <input placeholder="ม.1" value="${esc(g.level)}" onchange="setImportClass(${i},this.value,null)"> ห้อง <input placeholder="1" value="${esc(g.room)}" onchange="setImportClass(${i},null,this.value)"></span>` : ''}</span>
+        <span class="ii-count">${g.students.length} คน</span>
+      </label>`).join('')}</div>
+    <p class="import-sum">จะนำเข้า <b>${total}</b> คน เข้าภาคเรียน <b>${esc(state.currentSemester)}/${esc(state.currentYear)}</b>
+      ${dups ? `<br><span style="color:var(--red)">⚠️ มีเลขประจำตัวซ้ำกันระหว่างห้องที่เลือก ${dups} คน (คนเดียวจะอยู่ได้ห้องเดียว — ระบบใช้ห้องที่อยู่ท้ายรายการ)</span>` : ''}</p>`;
+  document.getElementById('importGoBtn').disabled = total === 0;
+}
+function setImportClass(i, level, room){
+  const g = importGroups[i];
+  if (level !== null) { const p = parseClassText(level); g.level = p ? p.level : cleanCell(level); if (p && !g.room) g.room = p.room; }
+  if (room !== null) g.room = cleanCell(room) || '1';
+  if (g.level && !g.room) g.room = '1';
+  g.selected = !!g.level;
+  renderImportPreview();
+}
+function selectImportGroups(on){ importGroups.forEach(g => { if (g.level) g.selected = on; }); renderImportPreview(); }
+
+async function processImportStudents(){
+  const groups = importGroups.filter(g => g.selected && g.level);
+  if (!groups.length) return toast('กรุณาเลือกอย่างน้อย 1 ห้อง', 'error');
+  const replace = document.getElementById('imp_replace').checked;
+  const withCid = document.getElementById('imp_citizen').checked;
+  const total = groups.reduce((a, g) => a + g.students.length, 0);
+  if (!confirm(`ยืนยันนำเข้า ${total} คน (${groups.length} ห้อง) เข้าภาคเรียน ${state.currentSemester}/${state.currentYear}?` + (replace ? '\n\nนักเรียนเดิมในห้องที่เลือกที่ไม่มีในไฟล์จะถูกปิดใช้งาน' : ''))) return;
+  try {
+    const res = await gas('importStudentGroups', groups.map(g => ({ level: g.level, room: g.room, students: g.students })),
+      { semester: state.currentSemester, academicYear: state.currentYear, replace, includeCitizen: withCid });
+    state.students = res.students;
+    renderStudents(); fillReportStudents();
+    state.summary = await API.getDashboardSummary(null, state.currentSemester, state.currentYear); renderDashboardStats();
+    closeModal();
+    toast(`นำเข้านักเรียน ${res.count} คน ใน ${res.rooms} ห้องแล้ว` + (res.deactivated ? ` (ปิดใช้งาน ${res.deactivated} คน)` : ''));
+  } catch (e) {}
 }
 
 /* ===================== ระบบส่งออกรายชื่อนักเรียน CSV ===================== */

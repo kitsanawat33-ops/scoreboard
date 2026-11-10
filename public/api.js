@@ -405,7 +405,7 @@ export async function getStudents(semester, academicYear) {
   rosters.forEach(r => {
     Object.values(r.students || {}).forEach(s => {
       out.push({
-        student_id: String(s.student_id), citizen_id: (secrets[r._id] || {})[s.student_id] || '',
+        student_id: String(s.student_id), citizen_id: (secrets[r._id] || {})[s.student_id] || '', prefix: s.prefix || '',
         first_name: s.first_name, last_name: s.last_name, class_level: r.level, room: r.room,
         semester: sem, academic_year: yr, status: s.status || 'ACTIVE'
       });
@@ -482,6 +482,63 @@ export async function importStudents(rows, classLevel, room, semester, academicY
   });
   await upsertStudents(records);
   return { ok: true, count: records.length, students: await getStudents(sem, yr) };
+}
+
+// นำเข้ารายชื่อเป็นกลุ่มห้อง (จาก CSV SchoolMIS / ใบรายชื่อ .xlsx)
+export async function importStudentGroups(groups, opts = {}) {
+  requireAdmin();
+  const sem = str(opts.semester || S.term.sem), yr = str(opts.academicYear || S.term.yr);
+  if (!Array.isArray(groups) || !groups.length) throw new Error('ไม่มีห้องที่เลือก');
+  const existing = await termRosters(sem, yr);
+  const target = {};   // rosterId -> {meta, students{}, citizen{}}
+  const where = {};    // sid -> rosterId (คนเดียวอยู่ได้ห้องเดียวต่อภาคเรียน)
+  let count = 0;
+  groups.forEach(g => {
+    const level = str(g.level), room = str(g.room || '1');
+    if (!level) return;
+    const id = rosterId(sem, yr, level, room);
+    target[id] = target[id] || { level, room, students: {}, citizen: {} };
+    (g.students || []).forEach(s => {
+      const sid = str(s.student_id); if (!sid) return;
+      if (where[sid] && where[sid] !== id) delete target[where[sid]].students[sid];
+      where[sid] = id;
+      target[id].students[sid] = { student_id: sid, prefix: str(s.prefix), first_name: str(s.first_name), last_name: str(s.last_name), status: 'ACTIVE' };
+      if (opts.includeCitizen && /^\d{13}$/.test(str(s.citizen_id))) target[id].citizen[sid] = str(s.citizen_id);
+    });
+  });
+  const ops = [];
+  let deactivated = 0;
+  Object.entries(target).forEach(([id, t]) => {
+    const prev = existing.find(r => r._id === id);
+    const students = Object.assign({}, (prev && prev.students) || {});
+    if (opts.replace) Object.keys(students).forEach(sid => {
+      if (!t.students[sid] && students[sid].status !== 'INACTIVE') { students[sid] = Object.assign({}, students[sid], { status: 'INACTIVE' }); deactivated++; }
+    });
+    Object.assign(students, t.students);
+    count += Object.keys(t.students).length;
+    ops.push(['set', ref('rosters', id), { semester: sem, academic_year: yr, level: t.level, room: t.room, students }]);
+    if (Object.keys(t.citizen).length) ops.push(['merge', ref('rosterSecrets', id), { citizen: t.citizen }]);
+  });
+  // นักเรียนที่ย้ายห้อง: เอาออกจากห้องเดิมในภาคเรียนเดียวกัน
+  existing.forEach(r => {
+    if (target[r._id]) return;
+    const moved = Object.keys(r.students || {}).filter(sid => where[sid]);
+    if (moved.length) {
+      const args = [];
+      moved.forEach(sid => args.push(new F.FieldPath('students', sid), F.deleteField()));
+      ops.push(['update', ref('rosters', r._id), args]);
+    }
+  });
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = F.writeBatch(db);
+    ops.slice(i, i + 400).forEach(([kind, r, data]) => {
+      if (kind === 'set') batch.set(r, data);
+      else if (kind === 'merge') batch.set(r, data, { merge: true });
+      else batch.update(r, ...data);
+    });
+    await commit(batch.commit());
+  }
+  return { ok: true, count, rooms: Object.keys(target).length, deactivated, students: await getStudents(sem, yr) };
 }
 
 export async function saveStudent(student) {

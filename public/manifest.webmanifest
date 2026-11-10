@@ -1,6 +1,6 @@
 {
-  "name": "PPJ ScoreBoard ระบบบันทึกคะแนนนักเรียน",
-  "short_name": "ScoreBoard",
+  "name": "ClassHub ระบบบันทึกคะแนนนักเรียน",
+  "short_name": "ClassHub",
   "description": "ระบบบันทึกคะแนน เช็คชื่อ และตัดเกรดนักเรียน",
   "lang": "th",
   "start_url": "/",

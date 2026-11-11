@@ -962,6 +962,41 @@ async function loadMyWork(){
     asg.catalog = catalog; asg.rooms = rooms; roomListCache = rooms;
   } catch (e) { return; }
   renderAssign();
+  renderMyTimetable();
+}
+
+// ตารางสอนรายสัปดาห์ (วัน × คาบ) ของวิชาที่ฉันสอน
+function renderMyTimetable(){
+  const box = document.getElementById('mwTimetable'); if (!box || !asg) return;
+  const mine = asg.catalog.filter(s => s.teachers.includes(asg.email));
+  const slots = {}; const times = {};
+  mine.forEach(s => (s.schedule || []).forEach(p => {
+    const k = `${p.day}-${p.period}`;
+    const list = slots[k] = slots[k] || [];
+    if (!list.some(x => x.subject_id === s.subject_id)) list.push(s);
+    if (p.start && !times[p.period]) times[p.period] = `${p.start}–${p.end}`;
+  }));
+  const keys = Object.keys(slots);
+  if (!keys.length) {
+    box.innerHTML = `<div class="empty">${mine.length ? 'ยังไม่มีข้อมูลวันและคาบของวิชาที่สอน — ผู้ดูแลระบบนำเข้าไฟล์ตารางสอน (.json) อีกครั้งเพื่อเพิ่มข้อมูลนี้' : 'ยังไม่มีวิชาที่สอนในภาคเรียนนี้'}</div>`;
+    return;
+  }
+  const maxP = Math.max(8, ...keys.map(k => Number(k.split('-')[1])));
+  const days = [1, 2, 3, 4, 5]; if (keys.some(k => k.startsWith('6-'))) days.push(6); if (keys.some(k => k.startsWith('0-'))) days.unshift(0);
+  const now = new Date(), dow = now.getDay(), hm = nowHM();
+  const total = keys.reduce((t, k) => t + slots[k].length, 0);
+  const perDay = d => keys.filter(k => k.startsWith(d + '-')).length;
+  document.getElementById('mwTtInfo').textContent = `สอนสัปดาห์ละ ${total} คาบ • ${days.filter(perDay).map(d => `${TH_DAYS[d]} ${perDay(d)}`).join(' • ')} • กดที่วิชาเพื่อเช็คชื่อ`;
+  const isNow = (d, p) => { if (d !== dow || !times[p]) return false; const [a, b] = times[p].split('–'); return hm >= a && hm < b; };
+  box.innerHTML = `<div class="table-wrap tt-wrap"><table class="tt-table">
+    <thead><tr><th class="tt-day">วัน / คาบ</th>${Array.from({ length: maxP }, (_, i) => `<th>คาบ ${i + 1}${times[i + 1] ? `<small>${times[i + 1]}</small>` : ''}</th>`).join('')}</tr></thead>
+    <tbody>${days.map(d => `<tr class="${d === dow ? 'tt-today' : ''}"><th class="tt-day">${TH_DAYS[d]}${d === dow ? '<small>วันนี้</small>' : ''}</th>${Array.from({ length: maxP }, (_, i) => {
+      const list = slots[`${d}-${i + 1}`] || [];
+      if (!list.length) return `<td class="tt-free${isNow(d, i + 1) ? ' tt-now' : ''}"></td>`;
+      return `<td class="tt-cell${isNow(d, i + 1) ? ' tt-now' : ''}">${list.map(s => `<button class="tt-sub-btn" onclick="goAttend('${esc(s.subject_id)}')" title="${esc(s.subject_name)}">
+        <b>${esc(s.subject_code || s.subject_name)}</b><span>${esc(s.level)}/${esc((s.rooms || [s.room]).join('+'))}</span><small>${esc(s.subject_name)}</small></button>`).join('')}</td>`;
+    }).join('')}</tr>`).join('')}</tbody></table></div>
+    <div class="tt-legend"><span class="tt-l-today"></span> วันนี้ <span class="tt-l-now"></span> คาบที่กำลังสอนอยู่ตอนนี้</div>`;
 }
 
 function tName(s, e){ return (s.teacher_names || {})[e] || (usersCache.find(u => u.email === e) || {}).name || e.split('@')[0]; }

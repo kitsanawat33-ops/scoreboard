@@ -1035,3 +1035,24 @@ body.auth-pending .google-btn, body.auth-pending .login-foot { display: none; }
 
 .auth-alt { background: none; border: 0; color: var(--ink-soft); font: inherit; font-size: 12.5px; text-decoration: underline; cursor: pointer; margin-top: 10px; min-height: 0; }
 body.auth-pending .auth-alt { display: none; }
+
+/* ---------- ตารางสอนของฉัน ---------- */
+.tt-wrap { border-radius: 12px; }
+.tt-table { min-width: 860px; table-layout: fixed; }
+.tt-table th, .tt-table td { text-align: center; padding: 5px; vertical-align: middle; border: 1px solid var(--line-light); white-space: normal; }
+.tt-table thead th { font-size: 12px; } .tt-table thead th small { display: block; font-weight: 400; font-size: 10.5px; color: var(--ink-faint); }
+.tt-table .tt-day { width: 78px; position: sticky; left: 0; z-index: 2; background: var(--surface-alt); font-size: 13px; }
+.tt-table .tt-day small { display: block; font-size: 10.5px; color: var(--fb-blue); font-weight: 600; }
+.tt-table thead .tt-day { z-index: 4; }
+.tt-today td, .tt-today .tt-day { background: #F2F8FF; }
+.tt-free { background: #FCFCFD; }
+.tt-sub-btn { display: flex; flex-direction: column; align-items: center; gap: 0; width: 100%; border: 0; border-radius: 10px; background: var(--fb-blue-soft); color: var(--ink); padding: 6px 4px; font: inherit; cursor: pointer; min-height: 0; line-height: 1.25; }
+.tt-sub-btn + .tt-sub-btn { margin-top: 4px; }
+.tt-sub-btn:hover { background: #D9E9FF; }
+.tt-sub-btn b { font-size: 12.5px; color: var(--fb-blue); } .tt-sub-btn span { font-size: 12px; font-weight: 600; }
+.tt-sub-btn small { font-size: 10.5px; color: var(--ink-soft); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-now { box-shadow: inset 0 0 0 3px #F0A020; }
+.tt-now .tt-sub-btn { background: #FFF1D6; } .tt-now .tt-sub-btn b { color: #A86A00; }
+.tt-legend { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--ink-soft); margin-top: 8px; flex-wrap: wrap; }
+.tt-legend span { display: inline-block; width: 14px; height: 14px; border-radius: 4px; }
+.tt-l-today { background: #F2F8FF; border: 1px solid #CFE2FF; } .tt-l-now { box-shadow: inset 0 0 0 3px #F0A020; margin-left: 8px; }

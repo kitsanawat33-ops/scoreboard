@@ -6,9 +6,13 @@ const [appMod, authMod, fsMod] = await Promise.all([
   import(`https://www.gstatic.com/firebasejs/${V}/firebase-auth.js`),
   import(`https://www.gstatic.com/firebasejs/${V}/firebase-firestore.js`)
 ]);
-import { firebaseConfig } from './config.js';
+import { firebaseConfig, SAME_DOMAIN_AUTH } from './config.js';
 
-export const app = appMod.initializeApp(firebaseConfig);
+// โดเมนสำหรับหน้าล็อกอิน: ถ้าเปิดใช้ ให้ใช้โดเมนเดียวกับที่เปิดแอป (Firebase Hosting มี /__/auth/ ให้ทุกโดเมน)
+const HOSTS = ['ppj-scoreboard.web.app', 'ppj-scoreboard.firebaseapp.com'];
+export const authDomain = (SAME_DOMAIN_AUTH && HOSTS.includes(location.hostname)) ? location.hostname : firebaseConfig.authDomain;
+export const redirectOk = authDomain === location.hostname;
+export const app = appMod.initializeApp(Object.assign({}, firebaseConfig, { authDomain }));
 // จำการเข้าสู่ระบบไว้ในเครื่องแบบถาวร (ไม่ต้องล็อกอินใหม่ทุกครั้งที่รีเฟรช/เปิดแอป)
 let authInst;
 try {

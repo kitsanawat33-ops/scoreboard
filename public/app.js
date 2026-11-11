@@ -75,6 +75,7 @@ function hideLogin(){ document.body.classList.remove('logged-out', 'auth-pending
 async function doLogin(){
   try { await API.login(); } catch (e) {
     if (e && e.code === 'auth/popup-closed-by-user') return;
+    if (e && e.code === 'classhub/popup-blocked') return showLogin(`เบราว์เซอร์บล็อกหน้าต่างล็อกอิน (ป๊อปอัป)<br><small>iPhone/iPad: ไปที่ <b>การตั้งค่า → Safari → ปิด "ปิดกั้นหน้าต่างที่แสดงขึ้น"</b> แล้วกดเข้าสู่ระบบอีกครั้ง<br>คอมพิวเตอร์/Android: กดไอคอนป๊อปอัปที่ช่องที่อยู่ → อนุญาต</small>`);
     showLogin('เข้าสู่ระบบไม่สำเร็จ: ' + esc(e.message || e));
   }
 }

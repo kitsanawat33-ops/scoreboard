@@ -8,5 +8,9 @@ export const firebaseConfig = {
   appId: "1:1031594915968:web:b2587bd27f099ff6e7ce65"
 };
 
+// ล็อกอินผ่านโดเมนเดียวกับแอป (แก้ปัญหา Safari/iPad "missing initial state")
+// เปิดเป็น true หลังเพิ่ม https://ppj-scoreboard.web.app/__/auth/handler ใน Google Cloud → OAuth client แล้วเท่านั้น
+export const SAME_DOMAIN_AUTH = false;
+
 // ผู้ดูแลระบบคนแรก (เข้าครั้งแรกแล้วระบบสร้างบัญชีผู้ดูแลให้อัตโนมัติ)
 export const BOOTSTRAP_ADMIN = "kitsanawat33@gmail.com";

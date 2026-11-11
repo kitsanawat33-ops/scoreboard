@@ -172,12 +172,18 @@ function requireAdmin() { if (!isAdmin()) throw new Error('เฉพาะผู
 export async function login() {
   const provider = new F.GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
+  // มือถือ/แอปบนหน้าจอโฮม: ถ้าโดเมนล็อกอินตรงกับแอป ใช้แบบเปลี่ยนหน้า (ไม่ติดตัวบล็อกป๊อปอัป)
+  const standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+  if (F.redirectOk && standalone) return F.signInWithRedirect(auth, provider);
   try {
     await F.signInWithPopup(auth, provider);
   } catch (e) {
     if (e && (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment')) {
-      await F.signInWithRedirect(auth, provider);
-    } else throw e;
+      // แบบเปลี่ยนหน้าใช้ได้เฉพาะเมื่อโดเมนล็อกอินตรงกับแอป ไม่งั้น Safari/Chrome รุ่นใหม่จะขึ้น "missing initial state"
+      if (F.redirectOk) return F.signInWithRedirect(auth, provider);
+      const err = new Error('popup-blocked'); err.code = 'classhub/popup-blocked'; throw err;
+    }
+    throw e;
   }
 }
 export async function logout() { stopAllListeners(); await F.signOut(auth); S.me = null; }

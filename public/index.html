@@ -274,7 +274,10 @@
         <div class="panel">
           <div class="toolbar">
             <div><h3 id="attSummaryTitle">สรุปการเข้าเรียนรายวิชา</h3><p id="attSummaryDesc">สถิติรวม ประวัติย้อนหลัง และคะแนนเข้าเรียนของนักเรียนแต่ละคน</p></div>
-            <button class="secondary" onclick="loadAttendanceSummary()">📊 ดูสรุปการเข้าเรียน</button>
+            <div class="toolbar-actions">
+              <button class="secondary" onclick="loadAttendanceSummary()">📊 ดูสรุปการเข้าเรียน</button>
+              <button class="primary" onclick="openAttPrintModal()">🖨️ พิมพ์สรุป</button>
+            </div>
           </div>
           <div id="attendanceSummaryBox"></div>
         </div>

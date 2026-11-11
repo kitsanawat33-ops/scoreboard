@@ -2950,3 +2950,125 @@ function renderAdminDash(d){
       </div>
     </div>`;
 }
+
+
+/* ===================== พิมพ์สรุปการเช็คชื่อ ===================== */
+let attPrintSheet = null;
+const ATT_SYMBOL = { PRESENT: '/', ABSENT: 'ข', LEAVE: 'ล', LATE: 'ส', ACTIVITY: 'ก' };
+function attSym(st){ return ATT_SYMBOL[st.status_id] || String(st.label || st.status_id).trim().charAt(0); }
+function attPrintTarget(){
+  if (attMode === 'homeroom') { const id = document.getElementById('attHomeroom').value; return id ? { kind: 'homeroom', id } : null; }
+  const id = document.getElementById('attSubject')?.value || document.getElementById('subjectSelectTop').value;
+  return id ? { kind: 'subject', id } : null;
+}
+async function openAttPrintModal(){
+  const t = attPrintTarget();
+  if (!t) return toast(attMode === 'homeroom' ? 'กรุณาเลือกห้อง' : 'กรุณาเลือกวิชา', 'error');
+  try { attPrintSheet = await gas('getAttendanceSheet', t.kind, t.id); } catch (e) { return; }
+  const d = attPrintSheet;
+  const dates = Object.keys(d.days).filter(x => Object.keys(d.days[x] || {}).length).sort();
+  if (!dates.length) return toast('ยังไม่มีข้อมูลการเช็คชื่อ', 'error');
+  const months = [...new Set(dates.map(x => x.slice(0, 7)))];
+  const mLabel = m => { const [y, mm] = m.split('-').map(Number); return `${TH_MONTHS[mm - 1]} ${y + 543}`; };
+  document.getElementById('modalTitle').textContent = `พิมพ์สรุปการเช็คชื่อ • ${d.kind === 'homeroom' ? 'ประจำชั้น' : d.title} ${d.level}/${d.rooms.join('+')}`;
+  document.getElementById('modalBody').innerHTML = `
+    <div class="form-grid">
+      <div class="form-row"><label>ช่วงวันที่</label>
+        <select id="ap_range" onchange="document.getElementById('ap_custom').style.display=this.value==='custom'?'':'none'">
+          <option value="all">ทั้งภาคเรียน (${dates.length} วัน)</option>
+          ${months.map(m => `<option value="m:${m}">เดือน ${mLabel(m)} (${dates.filter(x => x.startsWith(m)).length} วัน)</option>`).join('')}
+          <option value="custom">กำหนดเอง…</option>
+        </select></div>
+      <div class="form-row"><label>รูปแบบ</label>
+        <select id="ap_style"><option value="full">ตารางรายวัน + สรุป</option><option value="summary">สรุปอย่างเดียว (1 แผ่น)</option></select></div>
+    </div>
+    <div id="ap_custom" class="form-grid" style="display:none">
+      <div class="form-row"><label>ตั้งแต่</label><input type="date" id="ap_from" value="${dates[0]}"></div>
+      <div class="form-row"><label>ถึง</label><input type="date" id="ap_to" value="${dates[dates.length - 1]}"></div>
+    </div>
+    <div class="import-opts">
+      ${d.rooms.length > 1 ? '<label><input type="checkbox" id="ap_split" checked> แยกหน้าตามห้อง</label>' : ''}
+      <label><input type="checkbox" id="ap_sign" checked> มีช่องลงชื่อท้ายเอกสาร</label>
+    </div>
+    <div class="info-box" style="margin-top:12px">ร้อยละการมาเรียน = จำนวนครั้งที่มาเรียน (สถานะที่ไม่ใช่ "ขาด") ÷ จำนวนครั้งที่เช็คชื่อ • ต่ำกว่า 80% ขึ้นหมายเหตุ "มส"</div>
+    <div class="modal-actions"><button class="secondary" onclick="closeModal()">ยกเลิก</button><button class="primary" onclick="printAttendanceSheet()">🖨️ พิมพ์</button></div>`;
+  openModal();
+}
+
+function printAttendanceSheet(){
+  const d = attPrintSheet; if (!d) return;
+  const range = v('ap_range'), style = v('ap_style');
+  const split = document.getElementById('ap_split') ? document.getElementById('ap_split').checked : false;
+  const sign = document.getElementById('ap_sign').checked;
+  let dates = Object.keys(d.days).filter(x => Object.keys(d.days[x] || {}).length).sort();
+  let rangeText = 'ทั้งภาคเรียน';
+  const fmt = x => { const [y, m, dd] = x.split('-').map(Number); return `${dd} ${TH_MONTHS[m - 1]} ${y + 543}`; };
+  if (range.startsWith('m:')) { const m = range.slice(2); dates = dates.filter(x => x.startsWith(m)); const [y, mm] = m.split('-').map(Number); rangeText = `เดือน${['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'][mm - 1]} ${y + 543}`; }
+  else if (range === 'custom') { const f = v('ap_from'), t = v('ap_to'); dates = dates.filter(x => (!f || x >= f) && (!t || x <= t)); rangeText = `${fmt(f)} – ${fmt(t)}`; }
+  if (!dates.length) return toast('ไม่มีการเช็คชื่อในช่วงที่เลือก', 'error');
+
+  const statuses = (d.statuses || []).filter(s => s.status !== 'INACTIVE');
+  const stMap = Object.fromEntries(statuses.map(s => [String(s.status_id), s]));
+  const isAbsent = id => { const s = stMap[id]; return s ? Number(s.score_value) === 0 : false; };
+  const groups = split ? d.rooms.map(r => ({ rooms: [r], students: d.students.filter(s => String(s.room) === r) })) : [{ rooms: d.rooms, students: d.students }];
+  const school = state.settings.SCHOOL_NAME || '';
+  const term = `ภาคเรียนที่ ${d.semester} ปีการศึกษา ${d.academic_year}`;
+  const who = d.kind === 'homeroom' ? 'ครูประจำชั้น' : 'ครูผู้สอน';
+  const CHUNK = 24;
+
+  const pageFor = (g, chunk, ci, nChunks) => {
+    const rows = g.students.map((s, i) => {
+      const counts = {}; let total = 0, present = 0;
+      dates.forEach(x => { const r = (d.days[x] || {})[s.student_id]; if (r && r.status_id) { counts[r.status_id] = (counts[r.status_id] || 0) + 1; total++; if (!isAbsent(String(r.status_id))) present++; } });
+      const pct = total ? present / total * 100 : null;
+      const cells = style === 'full' ? chunk.map(x => { const r = (d.days[x] || {})[s.student_id]; const st = r && stMap[String(r.status_id)];
+        return `<td class="c ${r && isAbsent(String(r.status_id)) ? 'ab' : ''}">${r ? esc(st ? attSym(st) : r.status_id) : ''}</td>`; }).join('') : '';
+      const last = style === 'summary' || ci === nChunks - 1;
+      return `<tr><td class="c">${i + 1}</td><td class="c">${esc(s.student_id)}</td><td class="nm">${esc((s.prefix || '') + s.first_name)} ${esc(s.last_name)}</td>${cells}
+        ${last ? statuses.map(st => `<td class="c">${counts[st.status_id] || ''}</td>`).join('') + `<td class="c">${total}</td><td class="c"><b>${pct == null ? '-' : pct.toFixed(1)}</b></td><td class="c ab">${pct != null && pct < 80 ? 'มส' : ''}</td>` : ''}</tr>`;
+    }).join('');
+    const last = style === 'summary' || ci === nChunks - 1;
+    const dayTotals = style === 'full' ? `<tr class="tot"><td colspan="3">มาเรียน / เช็คชื่อ</td>${chunk.map(x => { const recs = Object.entries(d.days[x] || {}).filter(([sid]) => g.students.some(s => s.student_id === sid));
+      return `<td class="c">${recs.filter(([, r]) => !isAbsent(String(r.status_id))).length}<br>${recs.length}</td>`; }).join('')}${last ? `<td colspan="${statuses.length + 3}"></td>` : ''}</tr>` : '';
+    return `<section class="page">
+      <div class="hd"><b>${esc(school)}</b><h1>แบบสรุปการมาเรียน${d.kind === 'homeroom' ? ' (เช็คชื่อประจำชั้น)' : ''}</h1>
+        <div>${d.kind === 'homeroom' ? '' : `รายวิชา <b>${esc(d.title)}</b> • `}ชั้น <b>${esc(d.level)}/${esc(g.rooms.join('+'))}</b> • ${esc(term)}</div>
+        <div>${esc(who)}: ${esc(d.teachers.join(', ') || '-')} • ช่วงข้อมูล: ${esc(rangeText)} (${dates.length} วัน)${nChunks > 1 ? ` • แผ่นที่ ${ci + 1}/${nChunks}` : ''}</div></div>
+      <table><thead><tr><th rowspan="2">ที่</th><th rowspan="2">เลขประจำตัว</th><th rowspan="2" class="nm">ชื่อ–สกุล</th>
+        ${style === 'full' ? `<th colspan="${chunk.length}">วันที่</th>` : ''}
+        ${last ? `<th colspan="${statuses.length}">สรุป (ครั้ง)</th><th rowspan="2">รวม<br>เช็ค</th><th rowspan="2">ร้อยละ<br>มาเรียน</th><th rowspan="2">หมาย<br>เหตุ</th>` : ''}</tr>
+        <tr>${style === 'full' ? chunk.map(x => { const [y, m, dd] = x.split('-').map(Number); return `<th class="dt">${dd}/${m}</th>`; }).join('') : ''}
+        ${last ? statuses.map(st => `<th>${esc(st.label)}</th>`).join('') : ''}</tr></thead>
+        <tbody>${rows}${dayTotals}</tbody></table>
+      <div class="ft">${style === 'full' ? 'สัญลักษณ์: ' + statuses.map(st => `${esc(attSym(st))} = ${esc(st.label)}`).join(' • ') + ' • ' : ''}ร้อยละมาเรียน = ครั้งที่ไม่ขาด ÷ ครั้งที่เช็คชื่อ • มส = มาเรียนไม่ถึง 80%
+        • พิมพ์เมื่อ ${esc(thaiDate())}</div>
+      ${sign && last ? `<div class="sign"><div>ลงชื่อ ........................................ ${esc(who)}<br>( ${esc(d.teachers[0] || '........................................')} )</div>
+        <div>ลงชื่อ ........................................ ผู้ตรวจสอบ<br>( ........................................ )</div></div>` : ''}
+    </section>`;
+  };
+  let pages = '';
+  groups.forEach(g => {
+    const chunks = style === 'full' ? Array.from({ length: Math.ceil(dates.length / CHUNK) }, (_, i) => dates.slice(i * CHUNK, (i + 1) * CHUNK)) : [[]];
+    chunks.forEach((c, i) => { pages += pageFor(g, c, i, chunks.length); });
+  });
+  const html = `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>สรุปการมาเรียน ${esc(d.title)} ${esc(d.level)}/${esc(d.rooms.join('+'))}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+      @page { size: A4 ${style === 'full' ? 'landscape' : 'portrait'}; margin: 10mm; }
+      body { font-family: 'Sarabun', 'TH Sarabun New', sans-serif; font-size: 12px; color: #111; margin: 0; }
+      .page { page-break-after: always; } .page:last-child { page-break-after: auto; }
+      .hd { text-align: center; margin-bottom: 8px; line-height: 1.5; } .hd h1 { font-size: 17px; margin: 2px 0; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border: 1px solid #555; padding: 2px 3px; } th { background: #EEF2F7; font-weight: 600; font-size: 11px; }
+      .c { text-align: center; } .nm { text-align: left; white-space: nowrap; } .dt { font-size: 10px; padding: 2px 1px; }
+      .ab { color: #C00; font-weight: 600; } .tot td { background: #F7F7F7; font-size: 10px; text-align: center; }
+      tr { page-break-inside: avoid; }
+      .ft { margin-top: 6px; font-size: 10.5px; color: #444; }
+      .sign { display: flex; justify-content: space-around; margin-top: 26px; text-align: center; line-height: 2; }
+      @media screen { body { background: #888; } .page { background: #fff; width: ${style === 'full' ? '277mm' : '190mm'}; margin: 10px auto; padding: 10mm; box-shadow: 0 2px 10px rgba(0,0,0,.3); } }
+    </style></head><body>${pages}<script>document.fonts.ready.then(()=>setTimeout(()=>print(),300));<\/script></body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) return toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาตป๊อปอัปแล้วลองอีกครั้ง', 'error');
+  w.document.write(html); w.document.close(); w.focus();
+  closeModal();
+}

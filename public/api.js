@@ -473,7 +473,7 @@ async function rosterStudents(sem, yr, level, room) {
   const r = await read(ref('rosters', rosterId(sem, yr, level, room)));
   return Object.values((r && r.students) || {})
     .filter(s => s.status !== 'INACTIVE')
-    .map(s => ({ student_id: String(s.student_id), first_name: s.first_name, last_name: s.last_name, status: s.status || 'ACTIVE' }))
+    .map(s => ({ student_id: String(s.student_id), prefix: s.prefix || '', first_name: s.first_name, last_name: s.last_name, status: s.status || 'ACTIVE' }))
     .sort((a, b) => String(a.student_id).localeCompare(String(b.student_id), 'th', { numeric: true }));
 }
 
@@ -1869,4 +1869,23 @@ export async function getAdminDashboard() {
     },
     heat: { dates: allDates, rows: heat }
   };
+}
+
+
+// ข้อมูลสำหรับพิมพ์สรุปการเช็คชื่อ (รายวิชา หรือ ประจำชั้น)
+export async function getAttendanceSheet(kind, id) {
+  if (kind === 'homeroom') {
+    const r = parseRosterId(id);
+    const [students, book] = await Promise.all([rosterStudents(r.sem, r.yr, r.level, r.room), read(ref('homeroomBook', id))]);
+    return { kind, title: `เช็คชื่อประจำชั้น`, level: r.level, rooms: [String(r.room)], semester: r.sem, academic_year: r.yr,
+      teachers: [S.me.name || S.me.email], students: students.map(s => Object.assign(s, { room: String(r.room) })),
+      days: (book && book.days) || {}, statuses: S.attStatuses };
+  }
+  const subject = await getSubject(String(id));
+  const [students, book] = await Promise.all([subjectStudents(subject), read(ref('attendanceBook', String(id)))]);
+  const names = subject.teacher_names || {};
+  return { kind: 'subject', title: `${subject.subject_code ? subject.subject_code + ' ' : ''}${subject.subject_name}`, level: subject.level, rooms: subjRooms(subject),
+    semester: subject.semester, academic_year: subject.academic_year,
+    teachers: (subject.teachers || []).map(e => names[e] || (e === S.me.email ? S.me.name : '') || e),
+    students, days: (book && book.days) || {}, statuses: S.attStatuses };
 }

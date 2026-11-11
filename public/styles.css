@@ -938,3 +938,19 @@ body.auth-pending .google-btn, body.auth-pending .login-foot { display: none; }
 .comb-chip { display: inline-block; font-size: 11px; background: var(--purple-soft); color: var(--purple); border-radius: 999px; padding: 1px 8px; margin-left: 4px; font-weight: 600; }
 .room-tag { display: inline-block; font-size: 11px; background: var(--fb-blue-soft); color: var(--fb-blue); border-radius: 6px; padding: 0 6px; margin-left: 6px; font-weight: 600; vertical-align: middle; }
 .att-roombar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; font-size: 13px; color: var(--ink-soft); }
+
+/* ---------- ตารางบันทึกคะแนน: ตรึงรหัส + ชื่อนักเรียนไว้ด้านซ้าย ---------- */
+#scoreTable .sc-id, #scoreTable .sc-name { position: sticky; z-index: 2; background: #fff; }
+#scoreTable th.sc-id, #scoreTable th.sc-name { z-index: 4; background: var(--surface-alt); }
+#scoreTable .sc-id { left: 0; width: 72px; min-width: 72px; max-width: 72px; }
+#scoreTable .sc-name { left: 72px; box-shadow: 6px 0 8px -6px rgba(15, 23, 42, .25); }
+#scoreTable tbody tr:hover .sc-id, #scoreTable tbody tr:hover .sc-name { background: #F7F9FC; }
+#scoreTable .sc-sid { display: none; }
+@media (max-width: 760px) {
+  #scoreTable .sc-id { display: none; }
+  #scoreTable .sc-name { left: 0; white-space: normal; min-width: 112px; max-width: 132px; padding: 8px 8px; line-height: 1.3; }
+  #scoreTable .sc-nm { display: block; font-size: 13px; }
+  #scoreTable .sc-sid { display: block; font-size: 11px; color: var(--ink-soft); }
+  #scoreTable .sc-rt { display: none; }
+  #scoreTable .sc-sid .room-tag { margin-left: 4px; }
+}

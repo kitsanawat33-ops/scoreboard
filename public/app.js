@@ -1501,7 +1501,7 @@ function renderScoreTable(){
   const lockBtn=document.getElementById('lockBtn');
   if(lockBtn) lockBtn.textContent = locked ? '🔓 ปลดล็อกคะแนน' : '🔒 ล็อกคะแนน';
 
-  const catHeaderRow = '<tr><th rowspan="2">รหัส</th><th rowspan="2">ชื่อ–สกุล</th>' +
+  const catHeaderRow = '<tr><th rowspan="2" class="sc-id">รหัส</th><th rowspan="2" class="sc-name">ชื่อ–สกุล</th>' +
     byCat.map((cItems,ci)=> {
       if(!cItems.length) return '';
       const c = cats[ci];
@@ -1545,7 +1545,7 @@ function renderScoreTable(){
         <option value="W" ${r.status==='W'?'selected':''}>มส</option>
         <option value="ZERO" ${r.status==='ZERO'?'selected':''}>0 (ทุจริต)</option>
       </select>`;
-      return `<tr data-row="${ri}" data-student="${esc(r.student_id)}"><td>${esc(r.student_id)}</td><td>${esc(r.first_name)} ${esc(r.last_name)}${roomTag(scoreData.subject, r)}</td>${cells}<td class="row-total">${special?'-':Number(r.total).toFixed(2).replace('.00','')}</td><td class="row-grade">${gradeDisplay}</td><td>${statusSelect}</td></tr>`;
+      return `<tr data-row="${ri}" data-student="${esc(r.student_id)}"><td class="sc-id">${esc(r.student_id)}</td><td class="sc-name"><span class="sc-nm">${esc(r.first_name)} ${esc(r.last_name)}</span><small class="sc-sid">${esc(r.student_id)}${roomTag(scoreData.subject, r)}</small><span class="sc-rt">${roomTag(scoreData.subject, r)}</span></td>${cells}<td class="row-total">${special?'-':Number(r.total).toFixed(2).replace('.00','')}</td><td class="row-grade">${gradeDisplay}</td><td>${statusSelect}</td></tr>`;
     }).join('') + '</tbody>';
 
   t.querySelectorAll('.score-input:not([disabled])').forEach(inp=>inp.addEventListener('input',()=>updateRowTotal(inp.closest('tr'))));

@@ -2980,7 +2980,7 @@ async function openAttPrintModal(){
           <option value="custom">กำหนดเอง…</option>
         </select></div>
       <div class="form-row"><label>รูปแบบ</label>
-        <select id="ap_style"><option value="full">ตารางรายวัน + สรุป</option><option value="summary">สรุปอย่างเดียว (1 แผ่น)</option></select></div>
+        <select id="ap_style"><option value="full">ตารางรายวัน + สรุป (A4 แนวนอน)</option><option value="summary">สรุปอย่างเดียว (A4 แนวตั้ง)</option></select></div>
     </div>
     <div id="ap_custom" class="form-grid" style="display:none">
       <div class="form-row"><label>ตั้งแต่</label><input type="date" id="ap_from" value="${dates[0]}"></div>
@@ -3060,12 +3060,15 @@ function printAttendanceSheet(){
       .hd { text-align: center; margin-bottom: 8px; line-height: 1.5; } .hd h1 { font-size: 17px; margin: 2px 0; }
       table { width: 100%; border-collapse: collapse; }
       th, td { border: 1px solid #555; padding: 2px 3px; } th { background: #EEF2F7; font-weight: 600; font-size: 11px; }
+      ${style === 'summary' ? 'td { line-height: 1.3; padding: 1px 4px; } .hd { margin-bottom: 6px; line-height: 1.4; } .sign { margin-top: 18px; line-height: 1.8; }' : ''}
       .c { text-align: center; } .nm { text-align: left; white-space: nowrap; } .dt { font-size: 10px; padding: 2px 1px; }
       .ab { color: #C00; font-weight: 600; } .tot td { background: #F7F7F7; font-size: 10px; text-align: center; }
       tr { page-break-inside: avoid; }
       .ft { margin-top: 6px; font-size: 10.5px; color: #444; }
       .sign { display: flex; justify-content: space-around; margin-top: 26px; text-align: center; line-height: 2; }
-      @media screen { body { background: #888; } .page { background: #fff; width: ${style === 'full' ? '277mm' : '190mm'}; margin: 10px auto; padding: 10mm; box-shadow: 0 2px 10px rgba(0,0,0,.3); } }
+      /* แสดงบนจอเป็นแผ่น A4 จริง (แนวนอน 297×210 / แนวตั้ง 210×297) */
+      @media screen { body { background: #888; padding: 10px 0; } .page { box-sizing: border-box; background: #fff; width: ${style === 'full' ? '297mm' : '210mm'}; min-height: ${style === 'full' ? '210mm' : '297mm'}; margin: 0 auto 14px; padding: 10mm; box-shadow: 0 2px 10px rgba(0,0,0,.3); } }
+      @media print { .page { width: auto; ${style === 'full' ? '' : 'max-width: 190mm; margin: 0 auto;'} } }
     </style></head><body>${pages}<script>document.fonts.ready.then(()=>setTimeout(()=>print(),300));<\/script></body></html>`;
   const w = window.open('', '_blank');
   if (!w) return toast('เบราว์เซอร์บล็อกหน้าต่างใหม่ กรุณาอนุญาตป๊อปอัปแล้วลองอีกครั้ง', 'error');

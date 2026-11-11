@@ -10,7 +10,9 @@ import { firebaseConfig, SAME_DOMAIN_AUTH } from './config.js';
 
 // โดเมนสำหรับหน้าล็อกอิน: ถ้าเปิดใช้ ให้ใช้โดเมนเดียวกับที่เปิดแอป (Firebase Hosting มี /__/auth/ ให้ทุกโดเมน)
 const HOSTS = ['ppj-scoreboard.web.app', 'ppj-scoreboard.firebaseapp.com'];
-export const authDomain = (SAME_DOMAIN_AUTH && HOSTS.includes(location.hostname)) ? location.hostname : firebaseConfig.authDomain;
+// วิธีสำรอง: ผู้ใช้กด "ลองวิธีสำรอง" ที่หน้าล็อกอิน → กลับไปใช้โดเมน firebaseapp.com แบบเดิม
+let legacy = false; try { legacy = localStorage.getItem('classhub_auth_legacy') === '1'; } catch (e) {}
+export const authDomain = (SAME_DOMAIN_AUTH && !legacy && HOSTS.includes(location.hostname)) ? location.hostname : firebaseConfig.authDomain;
 export const redirectOk = authDomain === location.hostname;
 export const app = appMod.initializeApp(Object.assign({}, firebaseConfig, { authDomain }));
 // จำการเข้าสู่ระบบไว้ในเครื่องแบบถาวร (ไม่ต้องล็อกอินใหม่ทุกครั้งที่รีเฟรช/เปิดแอป)

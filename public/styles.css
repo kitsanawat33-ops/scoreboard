@@ -1032,3 +1032,6 @@ body.auth-pending .google-btn, body.auth-pending .login-foot { display: none; }
   .tgrid, .sgrid { grid-template-columns: 1fr; }
   .drow { flex-wrap: wrap; } .dprog em { min-width: 70px; }
 }
+
+.auth-alt { background: none; border: 0; color: var(--ink-soft); font: inherit; font-size: 12.5px; text-decoration: underline; cursor: pointer; margin-top: 10px; min-height: 0; }
+body.auth-pending .auth-alt { display: none; }

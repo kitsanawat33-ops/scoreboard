@@ -71,6 +71,15 @@ function showLogin(msg, signedIn){
   const out = document.getElementById('loginSwitch');
   if (out) out.style.display = signedIn ? 'inline-flex' : 'none';
 }
+function toggleAuthFallback(){
+  let on = false; try { on = localStorage.getItem('classhub_auth_legacy') === '1'; } catch (e) {}
+  try { on ? localStorage.removeItem('classhub_auth_legacy') : localStorage.setItem('classhub_auth_legacy', '1'); } catch (e) {}
+  location.reload();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  let on = false; try { on = localStorage.getItem('classhub_auth_legacy') === '1'; } catch (e) {}
+  const b = document.getElementById('authAltBtn'); if (b && on) b.textContent = 'กำลังใช้วิธีสำรอง • กลับไปใช้วิธีปกติ';
+});
 function hideLogin(){ document.body.classList.remove('logged-out', 'auth-pending'); }
 async function doLogin(){
   try { await API.login(); } catch (e) {

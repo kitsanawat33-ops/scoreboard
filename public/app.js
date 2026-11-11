@@ -155,6 +155,7 @@ async function loadApp(){
     state.registeredTerms = state.registeredTerms || ['1/2569'];
     if (isAdminRole()) { try { usersCache = await API.getUsers(); } catch (e) { usersCache = []; } }
     renderAll();
+    dashStale = true; if (document.getElementById('page-dashboard')?.classList.contains('active')) loadDashboard(true);
     const first = document.getElementById('subjectSelectTop')?.value;
     if (first) API.prefetchSubject(first);
     const cur = document.querySelector('.page.active')?.id?.replace('page-', '');
@@ -194,9 +195,6 @@ function renderAll(){
   document.getElementById('meAvatar').textContent = (me.name || me.email || '?').trim().charAt(0).toUpperCase();
   updateNetBadge();
 
-  document.getElementById('studentCount').textContent = state.summary.studentCount || 0;
-  document.getElementById('subjectCount').textContent = state.summary.subjectCount || 0;
-  document.getElementById('scoreCount').textContent = state.summary.scoreCount || 0;
 
   fillTermSelects();
   fillSubjectSelects();
@@ -463,8 +461,8 @@ function showPage(page){
   document.querySelectorAll('.nav-btn').forEach(x=>x.classList.toggle('active', x.dataset.page===page));
   document.querySelectorAll('.tablet-nav-item').forEach(x=>x.classList.toggle('active', x.dataset.page===page));
 
-  const titles={dashboard:'Dashboard',scores:'บันทึกคะแนน',attendance:'เช็คชื่อ',tasks:'เช็คงาน',students:'นักเรียน',subjects:'รายวิชาทั้งหมด',items:'องค์ประกอบคะแนน',reports:'รายงานผลการเรียน',users:'บุคลากร / ภาระงาน',mywork:'งานสอนของฉัน',dataio:'นำเข้า / ส่งออกข้อมูล'};
-  document.getElementById('pageTitle').textContent=titles[page]||'Dashboard';
+  const titles={dashboard:'หน้าแรก',scores:'บันทึกคะแนน',attendance:'เช็คชื่อ',tasks:'เช็คงาน',students:'นักเรียน',subjects:'รายวิชาทั้งหมด',items:'องค์ประกอบคะแนน',reports:'รายงานผลการเรียน',users:'บุคลากร / ภาระงาน',mywork:'งานสอนของฉัน',dataio:'นำเข้า / ส่งออกข้อมูล'};
+  document.getElementById('pageTitle').textContent=titles[page]||'หน้าแรก';
   
   if(page==='scores') loadScorePage();
   if(page==='items') renderItems();
@@ -476,6 +474,7 @@ function showPage(page){
   if(page==='tasks') loadTaskPage();
   if(page==='users') loadUsersPage();
   if(page==='mywork') loadMyWork();
+  if(page==='dashboard') loadDashboard();
   
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1725,11 +1724,7 @@ async function saveAllScores(){
   renderScoreTable(); renderDashboardStats(); toast('บันทึกคะแนนเรียบร้อย');
 }
 
-function renderDashboardStats(){
-  document.getElementById('studentCount').textContent=state.summary.studentCount||0;
-  document.getElementById('subjectCount').textContent=state.summary.subjectCount||0;
-  document.getElementById('scoreCount').textContent=state.summary.scoreCount||0;
-}
+function renderDashboardStats(){ dashStale = true; if (document.getElementById('page-dashboard')?.classList.contains('active')) loadDashboard(); }
 
 let stuRoom = null;   // 'ม.4|1' หรือ 'ALL'
 function roomKeyOf(s){ return `${s.class_level}|${s.room}`; }
@@ -1977,6 +1972,14 @@ function buildTimetableRows(){
         teacherNames: names, teacherName: names.join(', '), emailsAll, emails, email: emails[0] || '',
         note: rs.length > 1 ? 'เรียนรวม' : (s.combine ? `เรียนรวมห้อง ${s.combine} (แยกวิชา)` : (s.note === 'วิทย์' ? 'สายวิทย์' : s.note === 'ศิลป์' ? 'สายศิลป์' : (s.note || ''))) };
       row.label = `${level}/${row.rooms.join('+')}`;
+      // คาบสอน (วัน/คาบ/เวลา) จากตารางสอน
+      const per = ((tt.schedules || {})[termId] || {}).periods || [];
+      const cls = per.filter(p => p.type === 'class');
+      const seen = new Set();
+      row.schedule = (tt.timetable || []).filter(e => e.termId === termId && e.subjectId === s.id && rs.includes(Number(e.room)))
+        .map(e => ({ day: Number(e.day), period: Number(e.period), room: String(e.room), start: (cls[e.period - 1] || {}).start || '', end: (cls[e.period - 1] || {}).end || '' }))
+        .filter(e => { const k = e.day + '-' + e.period + '-' + e.room; if (seen.has(k)) return false; seen.add(k); return true; })
+        .sort((x, y) => x.day - y.day || x.period - y.period);
       row.exists = row.rooms.some(r => existing.has([row.code, row.name, row.level, r].join('|')));
       row.selected = true;
       ttRows.push(row);
@@ -2044,7 +2047,7 @@ async function processSubjectImport(){
   if (!confirm(`ยืนยันนำเข้ารายวิชา ${rows.length} รายการ (ใหม่ ${nNew}) เข้าภาคเรียน ${v('ttTarget')}?`)) return;
   try {
     const tg = ttTargetTerm();
-    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, rooms: r.rooms, credit: r.credit, planned_teachers: r.teacherNames, teachers: r.emails, teacher_names: Object.fromEntries(r.emails.map(e => [e, teacherName(e)])) })),
+    const res = await gas('importSubjects', rows.map(r => ({ subject_code: r.code, subject_name: r.name, level: r.level, room: r.room, rooms: r.rooms, schedule: r.schedule, credit: r.credit, planned_teachers: r.teacherNames, teachers: r.emails, teacher_names: Object.fromEntries(r.emails.map(e => [e, teacherName(e)])) })),
       { semester: tg.sem, academicYear: tg.yr, update });
     state.registeredTerms = res.registeredTerms || state.registeredTerms;
     closeModal();
@@ -2703,4 +2706,237 @@ function showLoading(x){
   } else {
     clearTimeout(loadingTimer); loadingTimer = null; el.classList.add('hidden');
   }
+}
+
+/* =====================================================================
+   หน้าแรก (Dashboard) — "วันนี้ต้องทำอะไร"
+   ===================================================================== */
+let dashStale = true, dashBusy = null;
+const TH_DAYS = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+const TH_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+function thaiDate(d = new Date()){ return `วัน${TH_DAYS[d.getDay()]}ที่ ${d.getDate()} ${TH_MONTHS[d.getMonth()]} ${d.getFullYear() + 543}`; }
+function nowHM(){ const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+function subjLabel(x){ return `${x.subject_code ? x.subject_code + ' ' : ''}${x.subject_name}`; }
+function roomsLabel(x){ return `${x.level}/${(x.rooms || []).join('+')}`; }
+
+async function loadDashboard(force){
+  if (!state.me) return;
+  if (!force && !dashStale && document.getElementById('dashBody').dataset.ready) return;
+  const token = {}; dashBusy = token; dashStale = false;
+  const me = state.me || {};
+  document.getElementById('dashGreet').textContent = `สวัสดี ${me.name || me.email || ''}`;
+  document.getElementById('dashSub').textContent = thaiDate();
+  const body = document.getElementById('dashBody');
+  if (!body.dataset.ready) body.innerHTML = '<div class="dash-loading"><span class="auth-spin"></span> กำลังรวบรวมข้อมูล…</div>';
+  try {
+    if (isAdminUI()) {
+      const d = await API.getAdminDashboard();
+      if (dashBusy !== token) return;
+      renderAdminDash(d);
+    } else {
+      const [t, h] = await Promise.all([API.getTeacherDashboard(), myHomerooms().length ? API.getHomeroomDashboard() : { rooms: [] }]);
+      if (dashBusy !== token) return;
+      renderTeacherDash(t, h);
+    }
+    body.dataset.ready = '1';
+  } catch (e) {
+    console.error(e);
+    body.innerHTML = `<div class="empty">โหลดข้อมูลหน้าแรกไม่สำเร็จ: ${esc(friendlyError(e))}</div>`;
+  }
+}
+
+// ---------- ไปยังหน้าทำงาน ----------
+function goAttend(id){
+  const d = document.getElementById('attDate'); if (d) d.value = todayStr();
+  if (attMode !== 'subject') { attMode = 'subject'; document.querySelectorAll('.seg-btn[data-attmode]').forEach(b => b.classList.toggle('active', b.dataset.attmode === 'subject'));
+    document.getElementById('attSubjectWrap').style.display = ''; document.getElementById('attHomeroomWrap').style.display = 'none'; }
+  syncSubject(id); showPage('attendance');
+}
+async function goHomeroom(rid){
+  const d = document.getElementById('attDate'); if (d) d.value = todayStr();
+  showPage('attendance');
+  await setAttMode('homeroom');
+  const sel = document.getElementById('attHomeroom');
+  if (sel && [...sel.options].some(o => o.value === rid)) { sel.value = rid; loadAttendancePage(); }
+}
+function goScores(id){ syncSubject(id); showPage('scores'); }
+function goTasks(id){ syncSubject(id); showPage('tasks'); }
+
+function bar(pct, cls = ''){ const p = Math.max(0, Math.min(100, Math.round(pct || 0))); return `<div class="dbar ${cls}"><i style="width:${p}%"></i></div>`; }
+const GRADE_ORDER = ['4', '3.5', '3', '2.5', '2', '1.5', '1', '0', 'ร', 'มส'];
+const GRADE_COLORS = { '4': '#0EA968', '3.5': '#3BBF7F', '3': '#6CCB5F', '2.5': '#A8C94A', '2': '#E0B13A', '1.5': '#F0A020', '1': '#F07A2A', '0': '#E5484D', 'ร': '#7F2BE3', 'มส': '#B4235A' };
+function gradeBar(g){
+  if (!g) return '<small class="dmuted">ยังไม่มีคะแนน</small>';
+  const total = Object.values(g).reduce((a, b) => a + b, 0) || 1;
+  const keys = Object.keys(g).sort((a, b) => (GRADE_ORDER.indexOf(a) + 99) % 99 - (GRADE_ORDER.indexOf(b) + 99) % 99);
+  return `<div class="gbar">${keys.map(k => `<i title="เกรด ${esc(k)}: ${g[k]} คน" style="width:${g[k] / total * 100}%;background:${GRADE_COLORS[k] || '#9AA4B2'}"></i>`).join('')}</div>
+    <div class="glegend">${keys.map(k => `<span><b style="background:${GRADE_COLORS[k] || '#9AA4B2'}"></b>${esc(k)}: ${g[k]}</span>`).join('')}</div>`;
+}
+
+// ---------- ครู / ครูประจำชั้น ----------
+function renderTeacherDash(t, h){
+  const body = document.getElementById('dashBody');
+  const subs = t.subjects.filter(x => !x.error);
+  const hasSched = subs.some(x => x.scheduled);
+  const today = subs.filter(x => (x.periods || []).length).sort((a, b) => a.periods[0].period - b.periods[0].period);
+  const notToday = subs.filter(x => !(x.periods || []).length);
+  const pending = today.filter(x => !x.checkedToday);
+  const now = nowHM();
+  document.getElementById('dashSub').textContent = thaiDate() + (subs.length
+    ? (today.length ? ` • วันนี้มี ${today.reduce((a, x) => a + x.periods.length, 0)} คาบ • ยังไม่เช็คชื่อ ${pending.length} วิชา` : ` • สอน ${subs.length} วิชา`)
+    : '');
+
+  if (!subs.length && !h.rooms.length) {
+    body.innerHTML = `<div class="panel dash-empty"><h3>ยังไม่มีงานสอนในภาคเรียนนี้</h3><p>ผู้ดูแลระบบเป็นผู้กำหนดวิชาที่สอนและห้องประจำชั้น — แจ้งผู้ดูแลระบบได้เลย</p>
+      ${isAdminRole() ? '<button class="primary" onclick="setViewMode(\'admin\')">สลับไปโหมดผู้ดูแลระบบ</button>' : ''}</div>`;
+    return;
+  }
+  let html = '';
+
+  // 1) คาบสอนวันนี้
+  const card = x => {
+    const done = x.checkedToday > 0;
+    const p = x.periods || [];
+    const started = p.length && p[0].start && p[0].start <= now;
+    const cls = done ? 'ok' : (started ? 'bad' : 'warn');
+    return `<div class="tcard ${cls}">
+      <div class="tcard-top"><span class="tcard-time">${p.length ? p.map(q => `คาบ ${q.period}${q.start ? ` ${q.start}–${q.end}` : ''}`).join(' • ') : 'ไม่มีคาบวันนี้'}</span>
+        <span class="tcard-state">${done ? `✅ เช็คแล้ว ${x.checkedToday}/${x.students}` : (started ? '⛔ ยังไม่เช็คชื่อ' : '⏳ ยังไม่ถึงเวลา')}</span></div>
+      <b class="tcard-name">${esc(subjLabel(x))}</b>
+      <small>ชั้น ${esc(roomsLabel(x))}${x.rooms.length > 1 ? ' (เรียนรวม)' : ''} • ${x.students} คน</small>
+      <div class="tcard-actions"><button class="${done ? 'secondary' : 'primary'}" onclick="goAttend('${esc(x.subject_id)}')">${done ? 'แก้ไขการเช็คชื่อ' : '✔ เช็คชื่อ'}</button>
+        <button class="secondary" onclick="goScores('${esc(x.subject_id)}')">กรอกคะแนน</button></div>
+    </div>`;
+  };
+  if (subs.length) {
+    html += `<div class="dsec"><div class="dsec-h"><h3>📅 คาบสอนวันนี้</h3>${hasSched ? '' : '<small class="dmuted">ยังไม่มีตารางสอนในระบบ — แสดงทุกวิชาที่สอน</small>'}</div>
+      <div class="tgrid">${(hasSched ? today : subs).map(card).join('') || '<div class="empty">วันนี้ไม่มีคาบสอน 🎉</div>'}</div>
+      ${hasSched && notToday.length ? `<details class="dmore"><summary>วิชาอื่นที่สอน (${notToday.length})</summary><div class="tgrid">${notToday.map(card).join('')}</div></details>` : ''}
+    </div>`;
+  }
+
+  // 2) ห้องประจำชั้นวันนี้
+  if (h.rooms.length) {
+    const st = h.statuses || [];
+    html += `<div class="dsec"><div class="dsec-h"><h3>🏫 ห้องประจำชั้นวันนี้</h3></div><div class="tgrid">${h.rooms.map(r => {
+      const done = r.checked > 0;
+      return `<div class="tcard ${done ? 'ok' : 'warn'}">
+        <div class="tcard-top"><span class="tcard-time">เช็คชื่อตอนเช้า</span><span class="tcard-state">${done ? `✅ เช็คแล้ว ${r.checked}/${r.students}` : '⏳ ยังไม่เช็ค'}</span></div>
+        <b class="tcard-name">ชั้น ${esc(r.level)}/${esc(r.room)}</b><small>${r.students} คน • เช็คไปแล้ว ${r.days} วัน</small>
+        ${done ? `<div class="hchips">${st.filter(s => r.counts[s.status_id]).map(s => `<span style="--c:${esc(s.color || '#888')}">${esc(s.label)} ${r.counts[s.status_id]}</span>`).join('')}</div>` : ''}
+        <div class="tcard-actions"><button class="${done ? 'secondary' : 'primary'}" onclick="goHomeroom('${esc(r.roster_id)}')">${done ? 'แก้ไข' : '✔ เช็คชื่อประจำชั้น'}</button>
+          <button class="secondary" onclick="dashHomeroomGrades('${esc(r.key)}', this)">ผลการเรียนเฉลี่ย</button></div>
+        <div class="hr-gpa" data-key="${esc(r.key)}"></div>
+        ${r.watch.length ? `<div class="hwatch"><b>ต้องติดตาม (เช็คชื่อเช้า)</b>${r.watch.map(w => `<div>${esc(w.first_name)} ${esc(w.last_name)} <small>${w.abs ? `ขาด ${w.abs} วัน` : ''}${w.abs && w.late ? ' • ' : ''}${w.late ? `สาย ${w.late} วัน` : ''}</small></div>`).join('')}</div>` : ''}
+      </div>`; }).join('')}</div></div>`;
+  }
+
+  // 3) งานค้าง
+  const todo = [];
+  pending.forEach(x => todo.push({ pri: 0, html: `<b>ยังไม่เช็คชื่อ</b> ${esc(subjLabel(x))} ${esc(roomsLabel(x))}`, btn: `<button class="small-btn" onclick="goAttend('${esc(x.subject_id)}')">เช็คชื่อ</button>` }));
+  subs.forEach(x => (x.items || []).filter(i => i.missing > 0).forEach(i => todo.push({ pri: i.filled > 0 ? 1 : 3,
+    html: `<b>${esc(i.item_name)}</b> (${esc(subjLabel(x))} ${esc(roomsLabel(x))}) — ยังไม่มีคะแนน <b>${i.missing}</b> คน`,
+    btn: x.locked ? '<small class="dmuted">ล็อกคะแนนแล้ว</small>' : `<button class="small-btn" onclick="goScores('${esc(x.subject_id)}')">กรอกคะแนน</button>` })));
+  subs.forEach(x => (x.taskMissing || []).forEach(tk => todo.push({ pri: 2,
+    html: `<b>${esc(tk.task_name)}</b> (${esc(subjLabel(x))} ${esc(roomsLabel(x))}) — ยังไม่ส่ง <b>${tk.missing}</b> คน${tk.due_date ? ` • กำหนดส่ง ${esc(tk.due_date)}` : ''}`,
+    btn: `<button class="small-btn" onclick="goTasks('${esc(x.subject_id)}')">เช็คงาน</button>` })));
+  todo.sort((a, b) => a.pri - b.pri);
+  if (subs.length) html += `<div class="dsec"><div class="dsec-h"><h3>📝 งานค้าง ${todo.length ? `<span class="dcount">${todo.length}</span>` : ''}</h3></div>
+    ${todo.length ? `<div class="dlist">${todo.map((x, i) => `<div class="drow${i >= 8 ? ' more' : ''}"><span>${x.html}</span>${x.btn}</div>`).join('')}</div>
+      ${todo.length > 8 ? `<button class="dlink" onclick="this.previousElementSibling.classList.add('all');this.remove()">แสดงทั้งหมด (${todo.length})</button>` : ''}`
+      : '<div class="dok">✅ ไม่มีงานค้าง เยี่ยมมาก!</div>'}</div>`;
+
+  // 4) นักเรียนที่ต้องติดตาม (รวมทุกวิชา)
+  const watch = {};
+  subs.forEach(x => (x.watch || []).forEach(w => {
+    const k = w.student_id; const o = watch[k] = watch[k] || { ...w, items: [] };
+    o.items.push(`${x.subject_name}: ${w.reasons.join(', ')}`);
+  }));
+  const wl = Object.values(watch).sort((a, b) => b.items.length - a.items.length);
+  if (subs.length) html += `<div class="dsec"><div class="dsec-h"><h3>🚩 นักเรียนที่ต้องติดตาม ${wl.length ? `<span class="dcount">${wl.length}</span>` : ''}</h3><small class="dmuted">ขาด ≥ 3 ครั้ง • มาเรียน &lt; 80% • สถานะ ร/มส/0 • ค้างงานเกินครึ่ง</small></div>
+    ${wl.length ? `<div class="dlist">${wl.map((w, i) => `<div class="drow${i >= 10 ? ' more' : ''}"><span><b>${esc(w.first_name)} ${esc(w.last_name)}</b> <small class="dmuted">${esc(w.student_id)}${w.room ? ` • ห้อง ${esc(w.room)}` : ''}</small><br><small>${w.items.map(esc).join(' • ')}</small></span></div>`).join('')}</div>
+      ${wl.length > 10 ? `<button class="dlink" onclick="this.previousElementSibling.classList.add('all');this.remove()">แสดงทั้งหมด (${wl.length})</button>` : ''}`
+      : '<div class="dok">✅ ยังไม่มีนักเรียนที่น่าเป็นห่วง</div>'}</div>`;
+
+  // 5) สรุปรายวิชา
+  if (subs.length) html += `<div class="dsec"><div class="dsec-h"><h3>📊 สรุปรายวิชา</h3></div><div class="sgrid">${subs.map(x => `
+    <div class="scard"><b>${esc(subjLabel(x))}</b><small>ชั้น ${esc(roomsLabel(x))} • ${x.students} คน</small>
+      <div class="srow"><span>มาเรียน</span>${bar(x.attendancePct, x.attendancePct != null && x.attendancePct < 80 ? 'red' : 'green')}<em>${x.attendancePct == null ? '-' : x.attendancePct + '%'}</em></div>
+      <div class="srow"><span>กรอกคะแนน</span>${bar(x.scoreSlots ? x.scoreFilled / x.scoreSlots * 100 : 0, 'blue')}<em>${x.scoreSlots ? Math.round(x.scoreFilled / x.scoreSlots * 100) + '%' : '-'}</em></div>
+      <div class="srow"><span>เช็คชื่อแล้ว</span><em style="margin-left:auto">${x.sessions} ครั้ง</em></div>
+      <div class="sgrade">${!x.grades ? '<small class="dmuted">ยังไม่มีคะแนน</small>' : (x.scoreSlots && x.scoreFilled / x.scoreSlots < 0.8 ? `<small class="dmuted">กรอกคะแนนแล้ว ${Math.round(x.scoreFilled / x.scoreSlots * 100)}% — สรุปเกรดเมื่อกรอกครบ 80%</small>` : gradeBar(x.grades))}</div>
+    </div>`).join('')}</div></div>`;
+
+  body.innerHTML = html;
+}
+
+async function dashHomeroomGrades(key, btn){
+  const box = btn.closest('.tcard').querySelector('.hr-gpa');
+  box.innerHTML = '<small class="dmuted">กำลังคำนวณ…</small>';
+  try {
+    const d = await API.getHomeroomGrades(key, state.currentSemester, state.currentYear);
+    const g = d.students.filter(s => s.gpa != null);
+    if (!g.length) { box.innerHTML = '<small class="dmuted">ยังไม่มีเกรดในภาคเรียนนี้</small>'; return; }
+    const avg = g.reduce((a, s) => a + s.gpa, 0) / g.length;
+    const low = g.slice().sort((a, b) => a.gpa - b.gpa).slice(0, 5);
+    box.innerHTML = `<div class="hgpa"><span>ผลการเรียนเฉลี่ยของห้อง</span><b>${avg.toFixed(2)}</b><small>(${g.length}/${d.students.length} คนที่มีเกรด • ${d.subjects.length} วิชา)</small></div>
+      <div class="hwatch"><b>เกรดเฉลี่ยต่ำสุด 5 คน</b>${low.map(s => `<div>${esc(s.first_name)} ${esc(s.last_name)} <small>${s.gpa.toFixed(2)}</small></div>`).join('')}</div>
+      <button class="dlink" onclick="showPage('reports');document.getElementById('hrGradeRoom').value='${esc(key)}';loadHomeroomGrades()">ดูตารางผลการเรียนทั้งห้อง →</button>`;
+  } catch (e) { box.innerHTML = `<small class="dmuted">${esc(friendlyError(e))}</small>`; }
+}
+
+// ---------- ผู้ดูแลระบบ ----------
+function renderAdminDash(d){
+  const body = document.getElementById('dashBody');
+  const c = d.counts, iss = d.issues;
+  document.getElementById('dashSub').textContent = `${thaiDate()} • โหมดผู้ดูแลระบบ • ภาคเรียน ${state.currentSemester}/${state.currentYear}`;
+  const pct = d.todaySubjects ? Math.round(d.todayDone / d.todaySubjects * 100) : 0;
+  const hrDone = d.homeroomToday.filter(r => r.done).length;
+  const issues = [
+    { n: iss.noTeacher, t: 'วิชาที่ยังไม่มีครูผู้สอน', go: "showPage('users')", b: 'จัดครู' },
+    { n: iss.plannedMissing.length, t: 'ครูตามตารางสอนที่ยังไม่มีอีเมล', go: "showPage('users');setTimeout(openPlannedTeachersModal,600)", b: 'เพิ่มอีเมล' },
+    { n: iss.roomsNoHomeroom.length, t: `ห้องที่ยังไม่มีครูประจำชั้น${iss.roomsNoHomeroom.length ? ` (${iss.roomsNoHomeroom.slice(0, 6).map(k => k.replace('|', '/')).join(', ')}${iss.roomsNoHomeroom.length > 6 ? ' …' : ''})` : ''}`, go: "showPage('users')", b: 'กำหนด' },
+    { n: iss.weightNot100, t: `วิชาที่องค์ประกอบคะแนนรวมยังไม่ครบ 100${iss.noItems ? ` (ยังไม่ได้ตั้งเลย ${iss.noItems} วิชา)` : ''}`, go: "showPage('subjects')", b: 'ดูรายวิชา' }
+  ];
+  const heatColor = n => n == null ? '' : n === 0 ? 'h0' : n <= 1 ? 'h1' : n <= 3 ? 'h2' : n <= 5 ? 'h3' : 'h4';
+  const fmtD = s => { const [y, m, dd] = s.split('-').map(Number); return `${dd} ${TH_MONTHS[m - 1]}`; };
+  body.innerHTML = `
+    <div class="kpis">
+      <div class="kpi"><span>นักเรียน</span><b>${c.students}</b><small>คน</small></div>
+      <div class="kpi"><span>ห้องเรียน</span><b>${c.rooms}</b><small>ห้อง</small></div>
+      <div class="kpi"><span>รายวิชา</span><b>${c.subjects}</b><small>วิชา</small></div>
+      <div class="kpi"><span>ครู</span><b>${c.teachers}</b><small>คน</small></div>
+    </div>
+
+    <div class="dsec"><div class="dsec-h"><h3>✅ การเช็คชื่อวันนี้</h3><small class="dmuted">${d.hasSchedule ? 'นับเฉพาะวิชาที่มีคาบวันนี้ตามตารางสอน' : 'ยังไม่มีตารางสอน — นับทุกวิชา'}</small></div>
+      <div class="dprog">
+        <div><span>รายวิชา</span>${bar(pct, 'green')}<em>${d.todayDone}/${d.todaySubjects} (${pct}%)</em></div>
+        <div><span>ประจำชั้น</span>${bar(d.homeroomToday.length ? hrDone / d.homeroomToday.length * 100 : 0, 'blue')}<em>${hrDone}/${d.homeroomToday.length} ห้อง</em></div>
+      </div>
+      <div class="dlist">${d.teachers.map((t, i) => `<div class="drow${i >= 10 ? ' more' : ''}"><span><b>${esc(t.name)}</b> <small class="dmuted">เช็คแล้ว ${t.done.length}/${t.done.length + t.todo.length}</small>
+        ${t.todo.length ? `<br>${t.todo.map(x => `<span class="dchip bad">${esc(x.label)}${x.periods.length ? ` • คาบ ${x.periods.join(',')}` : ''}</span>`).join('')}` : ''}</span>
+        <span class="dstate ${t.todo.length ? 'bad' : 'ok'}">${t.todo.length ? `ยังไม่เช็ค ${t.todo.length}` : '✅ ครบ'}</span></div>`).join('') || '<div class="empty">วันนี้ไม่มีคาบเรียน</div>'}</div>
+      ${d.teachers.length > 10 ? `<button class="dlink" onclick="this.previousElementSibling.classList.add('all');this.remove()">แสดงครูทั้งหมด (${d.teachers.length})</button>` : ''}
+    </div>
+
+    <div class="dsec"><div class="dsec-h"><h3>⚠️ ข้อมูลที่ยังไม่ครบ</h3></div>
+      <div class="dlist">${issues.map(x => `<div class="drow"><span>${x.n ? `<span class="dcount">${x.n}</span>` : '✅'} ${esc(x.t)}</span>${x.n ? `<button class="small-btn" onclick="${x.go}">${x.b}</button>` : ''}</div>`).join('')}</div>
+    </div>
+
+    <div class="dsec"><div class="dsec-h"><h3>🗓️ ขาดเรียนตอนเช้า รายห้อง</h3><small class="dmuted">จำนวนนักเรียนที่ขาด จากการเช็คชื่อประจำชั้น ${d.heat.dates.length} วันล่าสุด</small></div>
+      ${d.heat.dates.length ? `<div class="table-wrap heat-wrap"><table class="heat"><thead><tr><th>ห้อง</th>${d.heat.dates.map(x => `<th>${fmtD(x)}</th>`).join('')}</tr></thead>
+        <tbody>${d.heat.rows.map(r => `<tr><td><b>${esc(r.key.replace('|', '/'))}</b> <small class="dmuted">${r.count}</small></td>${r.cells.map(n => `<td class="${heatColor(n)}">${n == null ? '·' : n}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+        <div class="heat-legend"><span class="h0">0</span><span class="h1">1</span><span class="h2">2–3</span><span class="h3">4–5</span><span class="h4">6+</span><span>· = ยังไม่เช็ค</span></div>`
+        : '<div class="empty">ยังไม่มีการเช็คชื่อประจำชั้น</div>'}
+    </div>
+
+    <div class="dsec"><div class="dsec-h"><h3>⚡ ทางลัด</h3></div>
+      <div class="shortcuts">
+        <button onclick="showPage('dataio')">📥 นำเข้า / ส่งออกข้อมูล</button>
+        <button onclick="showPage('users')">👥 บุคลากร / ภาระงาน</button>
+        <button onclick="showPage('subjects')">📚 รายวิชาทั้งหมด</button>
+        <button onclick="openTermManageModal()">🔄 จัดการภาคเรียน</button>
+        <button onclick="setViewMode('mine')">👩‍🏫 ดูงานสอนของฉัน</button>
+      </div>
+    </div>`;
 }

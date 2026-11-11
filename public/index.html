@@ -61,7 +61,7 @@
               <path d="M7 10H9V13H7V10Z" fill="#FFFFFF"/>
             </svg>
           </span>
-          Dashboard
+          หน้าแรก
         </button>
         <button class="nav-btn" data-page="attendance">
           <span class="px-icon">
@@ -190,7 +190,7 @@
         <div class="topbar-left">
           <button class="hamburger-btn" onclick="toggleSidebar()" aria-label="เปิดเมนู">☰</button>
           <div>
-            <h1 id="pageTitle">Dashboard</h1>
+            <h1 id="pageTitle">หน้าแรก</h1>
             <p id="schoolName" style="cursor:pointer;" onclick="openSchoolSettingsModal()" title="คลิกเพื่อแก้ไขชื่อโรงเรียน">กำลังโหลด...</p>
           </div>
         </div>
@@ -208,129 +208,18 @@
       </header>
 
       <section id="page-dashboard" class="page active">
-        <div class="hero">
+        <div class="dash-hero">
           <div>
             <span class="eyebrow" id="dashboardTermEyebrow">SEMESTER 1 / 2569</span>
-            <h2>จัดการคะแนนและติดตามการเรียนรู้</h2>
-            <p>เพิ่มวิชา กำหนดองค์ประกอบคะแนน เช็คชื่อ เช็คงาน และตัดเกรดอัตโนมัติ</p>
+            <h2 id="dashGreet">สวัสดีครับ</h2>
+            <p id="dashSub">กำลังโหลดข้อมูลวันนี้…</p>
           </div>
           <div class="hero-actions">
-            <button class="tablet-toggle-btn" id="btnTabletToggle" onclick="toggleTabletMode()">
-              📟 สลับเป็นโหมด Tablet
-            </button>
-            <button class="primary" onclick="showPage('scores')">เริ่มบันทึกคะแนน →</button>
+            <button class="tablet-toggle-btn" id="btnTabletToggle" onclick="toggleTabletMode()">📟 สลับเป็นโหมด Tablet</button>
+            <button class="dash-refresh" onclick="loadDashboard(true)">↻ รีเฟรช</button>
           </div>
         </div>
-
-        <div class="cards">
-          <div class="stat-card">
-            <div class="stat-icon">
-              <span class="px-icon">
-                <svg width="24" height="24" viewBox="0 0 16 16" fill="none">
-                  <path d="M8 2L1 5L8 8L15 5L8 2Z" fill="#1877F2"/>
-                  <path d="M4 7V11C4 13 8 14 8 14C8 14 12 13 12 11V7L8 9L4 7Z" fill="#1877F2"/>
-                </svg>
-              </span>
-            </div>
-            <div class="stat-info">
-              <span>นักเรียน</span>
-              <b id="studentCount">0</b>
-              <small>คนในระบบ</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon">
-              <span class="px-icon">
-                <svg width="24" height="24" viewBox="0 0 16 16" fill="none">
-                  <path d="M3 2H13V14H3V2Z" fill="#9B59B6"/>
-                  <path d="M5 4H11V6H5V4Z" fill="#FFFFFF"/>
-                </svg>
-              </span>
-            </div>
-            <div class="stat-info">
-              <span>รายวิชา (เทอมนี้)</span>
-              <b id="subjectCount">0</b>
-              <small>วิชาที่สอน</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon">
-              <span class="px-icon">
-                <svg width="24" height="24" viewBox="0 0 16 16" fill="none">
-                  <path d="M3 2H11L14 5V14H3V2Z" fill="#2ECC71"/>
-                  <path d="M5 7H11V8H5V7ZM5 9H11V10H5V9Z" fill="#FFFFFF"/>
-                </svg>
-              </span>
-            </div>
-            <div class="stat-info">
-              <span>คะแนนที่บันทึก</span>
-              <b id="scoreCount">0</b>
-              <small>รายการ</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon">
-              <span class="px-icon">
-                <svg width="24" height="24" viewBox="0 0 16 16" fill="none">
-                  <path d="M8 1L10 6H15L11 9L13 14L8 11L3 14L5 9L1 6H6L8 1Z" fill="#F39C12"/>
-                </svg>
-              </span>
-            </div>
-            <div class="stat-info">
-              <span>สถานะระบบ</span>
-              <b style="color:var(--green)">พร้อม</b>
-              <small>เชื่อมต่อ Firebase</small>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head"><h3>การใช้งานอย่างรวดเร็ว</h3></div>
-          <div class="dashboard-big-grid">
-            <div class="big-action-card card-att" onclick="showPage('attendance')">
-              <div class="big-action-char">
-                <span class="px-icon">
-                  <svg width="56" height="56" viewBox="0 0 16 16" fill="none">
-                    <path d="M4 2H12V5H4V2Z" fill="#5D4037"/>
-                    <path d="M3 4H13V6H3V4Z" fill="#5D4037"/>
-                    <path d="M4 5H12V10H4V5Z" fill="#FFCC80"/>
-                    <path d="M5 7H7V8H5V7ZM9 7H11V8H9V7Z" fill="#212121"/>
-                    <path d="M7 9H9V10H7V9Z" fill="#E53935"/>
-                    <path d="M4 10H12V15H4V10Z" fill="#2ECC71"/>
-                    <path d="M7 10H9V15H7V10Z" fill="#FFFFFF"/>
-                    <path d="M11 11L14 8L15 9L11 13L9 11L10 10L11 11Z" fill="#F1C40F"/>
-                  </svg>
-                </span>
-              </div>
-              <div class="big-action-content">
-                <h4>เช็คชื่อเข้าเรียน</h4>
-                <p>บันทึกการมาเรียน ขาด ลา มาสาย และสรุปสถิติประจำวัน</p>
-                <span class="action-btn-pill">เข้าสู่ระบบเช็คชื่อ →</span>
-              </div>
-            </div>
-
-            <div class="big-action-card card-task" onclick="showPage('tasks')">
-              <div class="big-action-char">
-                <span class="px-icon">
-                  <svg width="56" height="56" viewBox="0 0 16 16" fill="none">
-                    <path d="M3 2H13V14H3V2Z" fill="#FFE082"/>
-                    <path d="M2 3H14V13H2V3Z" fill="#FFCA28"/>
-                    <path d="M4 1H6V3H4V1ZM7 1H9V3H7V1ZM10 1H12V3H10V1Z" fill="#78909C"/>
-                    <path d="M4 5H6V7H4V5ZM7 5H12V6H7V5Z" fill="#2ECC71"/>
-                    <path d="M4 8H6V10H4V8ZM7 8H12V9H7V8Z" fill="#E67E22"/>
-                    <path d="M4 11H6V12H4V11ZM7 11H10V12H7V11Z" fill="#E74C3C"/>
-                    <path d="M12 10L13 12H15L13.5 13.5L14 15.5L12 14L10 15.5L10.5 13.5L9 12H11L12 10Z" fill="#E91E63"/>
-                  </svg>
-                </span>
-              </div>
-              <div class="big-action-content">
-                <h4>ตรวจเช็คงาน</h4>
-                <p>ติดตามการส่งงาน การบ้าน ชิ้นงาน และประเมินความรับผิดชอบ</p>
-                <span class="action-btn-pill">เข้าสู่ระบบเช็คงาน →</span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <div id="dashBody"><div class="dash-loading"><span class="auth-spin"></span> กำลังรวบรวมข้อมูล…</div></div>
       </section>
 
       <section id="page-scores" class="page">

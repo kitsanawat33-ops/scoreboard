@@ -683,7 +683,7 @@ export async function getSubjectCatalog(semester, academicYear) {
   const q = F.query(F.collection(db, 'subjects'), F.where('semester', '==', sem), F.where('academic_year', '==', yr));
   const docs = (await F.getDocs(q)).docs.map(d => d.data()).filter(s => s.status !== 'INACTIVE');
   return docs.map(s => ({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, level: s.level, room: s.room, rooms: subjRooms(s),
-    teachers: s.teachers || [], teacher_names: s.teacher_names || {}, planned_teacher: s.planned_teacher || '', planned_teachers: s.planned_teachers || (s.planned_teacher ? [s.planned_teacher] : []), credit: (s.config || {}).credit })).sort(subjectSort);
+    teachers: s.teachers || [], teacher_names: s.teacher_names || {}, planned_teacher: s.planned_teacher || '', planned_teachers: s.planned_teachers || (s.planned_teacher ? [s.planned_teacher] : []), schedule: s.schedule || [], item_total: Object.values(s.items || {}).filter(i => i.status !== 'INACTIVE' && !toBool(i.is_retake)).reduce((t, i) => t + num(i.max_score || 0), 0), item_count: Object.values(s.items || {}).filter(i => i.status !== 'INACTIVE').length, credit: (s.config || {}).credit })).sort(subjectSort);
 }
 export async function getRoomList(semester, academicYear) {
   const sem = str(semester || S.term.sem), yr = str(academicYear || S.term.yr);
@@ -759,8 +759,12 @@ export async function getHomeroomGrades(key, semester, academicYear) {
     if (!data) continue;
     const credit = num(data.config.credit || 0);
     subjects.push({ subject_id: s.subject_id, subject_code: s.subject_code, subject_name: s.subject_name, credit, teachers: s.teachers, teacher_names: s.teacher_names });
+    // วิชาที่ยังไม่มีคะแนนเลย: ยังไม่นับเกรด
+    const manual = data.items.filter(i => i.category !== CATEGORIES.ATTENDANCE && i.category !== CATEGORIES.TASKS);
+    const started = data.rows.some(r => manual.some(i => r.scores[i.item_id] !== '' && r.scores[i.item_id] != null));
     data.rows.filter(r => !r.room || str(r.room) === room).forEach(r => {
       const st = students[r.student_id] = students[r.student_id] || { student_id: r.student_id, first_name: r.first_name, last_name: r.last_name, grades: {}, q: 0, c: 0 };
+      if (!started && (!r.status || r.status === 'NORMAL')) { st.grades[s.subject_id] = { grade: '', total: null, status: 'NORMAL' }; return; }
       st.grades[s.subject_id] = { grade: r.grade, total: r.total, status: r.status };
       if (credit > 0 && r.status === 'NORMAL' && r.grade !== '' && r.grade != null) { st.q += num(r.point || 0) * credit; st.c += credit; }
       else if (credit > 0 && r.status === 'ZERO') st.c += credit;
@@ -827,6 +831,7 @@ export async function importSubjects(list, opts = {}) {
       prevs.forEach(prev => {
         const patch = { updated_at: nowIso() };
         if (planned.length) { patch.planned_teachers = planned; patch.planned_teacher = planned[0]; }
+        if (Array.isArray(x.schedule)) patch.schedule = x.schedule;
         if (credit) patch.config = Object.assign({}, prev.config || {}, { credit });
         if (teachers.length) patch.teachers = [...new Set([...(prev.teachers || []), ...teachers])];
         if (teachers.length) patch.teacher_names = Object.assign({}, prev.teacher_names || {}, x.teacher_names || {});
@@ -842,7 +847,7 @@ export async function importSubjects(list, opts = {}) {
     const id = uid(10);
     const doc = Object.assign({ config: Object.assign(defaultConfig(), credit ? { credit } : {}), items: {}, tasks: {} }, rec, {
       subject_id: id, semester: sem, academic_year: yr, max_score: 100, status: 'ACTIVE',
-      teachers, teacher_names: x.teacher_names || {}, planned_teacher: planned[0] || '', planned_teachers: planned, updated_at: nowIso(), source: 'timetable'
+      teachers, teacher_names: x.teacher_names || {}, planned_teacher: planned[0] || '', planned_teachers: planned, schedule: Array.isArray(x.schedule) ? x.schedule : [], updated_at: nowIso(), source: 'timetable'
     });
     ops.push([ref('subjects', id), doc, false]);
     rooms.forEach(r => have.set(key(rec, r), doc));
@@ -917,7 +922,8 @@ export async function mergeSubjects(ids, opts = {}) {
     items, tasks, rooms, room: rooms[0], room_keys: roomKeys(L, rooms),
     teachers: [...new Set(list.flatMap(s => s.teachers || []))],
     teacher_names: Object.assign({}, ...list.map(s => s.teacher_names || {})),
-    planned_teachers: planned, planned_teacher: planned[0] || '', updated_at: nowIso()
+    planned_teachers: planned, planned_teacher: planned[0] || '', updated_at: nowIso(),
+    schedule: list.flatMap(s => s.schedule || [])
   });
   const batch = F.writeBatch(db);
   batch.set(ref('subjects', main.subject_id), mainDoc);
@@ -951,13 +957,15 @@ export async function splitSubject(subjectId, room) {
   const tMove = {}, tKeep = {};
   Object.entries((tb || {}).tasks || {}).forEach(([t, m]) => { const [mv, kp] = pick(m, k => sids.has(k)); tMove[t] = mv; tKeep[t] = kp; });
   const left = rooms.filter(x => x !== r);
-  const newSub = Object.assign({}, s, { subject_id: nid, room: r, rooms: [r], room_keys: roomKeys(s.level, [r]), split_from: s.subject_id, updated_at: nowIso() });
+  const newSub = Object.assign({}, s, { subject_id: nid, room: r, rooms: [r], room_keys: roomKeys(s.level, [r]), split_from: s.subject_id, updated_at: nowIso(),
+    schedule: (s.schedule || []).filter(p => !p.room || String(p.room) === r) });
   Object.values(newSub.items || {}).forEach(it => it.subject_id = nid);
   Object.values(newSub.tasks || {}).forEach(t => t.subject_id = nid);
   delete newSub.merged_into;
   const batch = F.writeBatch(db);
   batch.set(ref('subjects', nid), newSub);
-  batch.update(ref('subjects', s.subject_id), { rooms: left, room: left[0], room_keys: roomKeys(s.level, left), updated_at: nowIso() });
+  batch.update(ref('subjects', s.subject_id), { rooms: left, room: left[0], room_keys: roomKeys(s.level, left), updated_at: nowIso(),
+    schedule: (s.schedule || []).filter(p => !p.room || String(p.room) !== r) });
   batch.set(ref('scoreSheets', nid), { subject_id: nid, scores: scMove, statuses: stMove });
   batch.set(ref('scoreSheets', s.subject_id), Object.assign({}, sh || {}, { subject_id: s.subject_id, scores: scKeep, statuses: stKeep }));
   batch.set(ref('attendanceBook', nid), { subject_id: nid, days: daysMove, log: (ab || {}).log || {} });
@@ -1154,9 +1162,14 @@ export async function saveAttendance(payload) {
     days: { [date]: records },
     log: { [date]: { by: S.me.email, at: nowIso() } }
   }, { merge: true }));
+  logDaily(date, 'subjects', subjectId, { n: Object.keys(records).length, by: S.me.email, at: nowIso() });
   const data = await getAttendanceData(subjectId, date);
   data.pending = res.pending;
   return data;
+}
+// สรุปรายวันแบบเบา (ให้หน้าแรกของผู้ดูแลอ่านเอกสารเดียวต่อวัน)
+function logDaily(date, kind, id, val) {
+  try { commit(F.setDoc(ref('dailyLog', date), { date, [kind]: { [id]: val } }, { merge: true })).catch(() => {}); } catch (e) {}
 }
 
 export async function getAttendanceSummary(subjectId, preSubject, preBook, preStudents) {
@@ -1240,6 +1253,8 @@ export async function saveHomeroom(payload) {
     semester: r.sem, academic_year: r.yr, level: r.level, room: r.room,
     days: { [date]: records }, log: { [date]: { by: S.me.email, at: nowIso() } }
   }, { merge: true }));
+  const absentIds = new Set(S.attStatuses.filter(s => num(s.score_value) === 0).map(s => String(s.status_id)));
+  logDaily(date, 'homerooms', payload.roster_id, { n: Object.keys(records).length, absent: Object.values(records).filter(x => absentIds.has(x.status_id)).length, by: S.me.email, at: nowIso() });
   const data = await getHomeroomData(payload.roster_id, date);
   data.pending = res.pending;
   return data;
@@ -1694,3 +1709,158 @@ export async function importLegacyWorkbook(sheets, opts = {}) {
 
 // ให้หน้าเว็บ (สคริปต์ปกติ) เรียกใช้ได้
 export const _state = S;
+
+
+// =====================================================================
+// หน้าแรก (Dashboard)
+// =====================================================================
+export function localDate(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+const absentStatusIds = () => new Set(S.attStatuses.filter(s => num(s.score_value) === 0).map(s => String(s.status_id)));
+const lateStatusIds = () => new Set(S.attStatuses.filter(s => num(s.score_value) > 0 && num(s.score_value) < 1).map(s => String(s.status_id)));
+
+// ครูผู้สอน: คาบวันนี้ งานค้าง นักเรียนที่ต้องติดตาม สรุปรายวิชา
+export async function getTeacherDashboard() {
+  const today = localDate(), dow = new Date().getDay();
+  const subjects = (await getSubjects(S.term.sem, S.term.yr)).filter(s => s.status !== 'INACTIVE' && (seeAll() ? true : mySubject(s)));
+  const absent = absentStatusIds();
+  const out = await Promise.all(subjects.map(async s => {
+    const id = String(s.subject_id);
+    try {
+      const subject = await getSubject(id);
+      const [students, attBook, taskBook, sheet] = await Promise.all([
+        subjectStudents(subject), read(ref('attendanceBook', id)), read(ref('taskBook', id)), read(ref('scoreSheets', id))
+      ]);
+      const days = (attBook && attBook.days) || {};
+      const todayRec = days[today] || {};
+      const att = summarizeBook(subject, students, days, S.attStatuses, true);
+      const items = Object.values(subject.items || {}).filter(i => i.status !== 'INACTIVE' && !toBool(i.is_retake) && i.category !== CATEGORIES.ATTENDANCE && i.category !== CATEGORIES.TASKS)
+        .sort((a, b) => num(a.sequence) - num(b.sequence));
+      const scores = (sheet && sheet.scores) || {}, sts = (sheet && sheet.statuses) || {};
+      const normal = students.filter(st => !sts[st.student_id] || !sts[st.student_id].status || sts[st.student_id].status === 'NORMAL');
+      const itemProgress = items.map(i => {
+        const filled = normal.filter(st => { const v = (scores[st.student_id] || {})[i.item_id]; return v !== undefined && v !== null && v !== ''; }).length;
+        return { item_id: i.item_id, item_name: i.item_name, category: i.category, filled, missing: normal.length - filled };
+      });
+      const tasks = Object.values(subject.tasks || {}).filter(t => t.status !== 'INACTIVE');
+      const recs = (taskBook && taskBook.tasks) || {};
+      const taskMissing = tasks.map(t => {
+        const r = recs[t.task_id] || {};
+        const miss = students.filter(st => !r[st.student_id] || String(r[st.student_id].status_id) === 'MISSING').length;
+        return { task_id: t.task_id, task_name: t.task_name, due_date: t.due_date || '', missing: miss };
+      }).filter(t => t.missing > 0).sort((a, b) => b.missing - a.missing);
+      // เกรด (เฉพาะเมื่อมีคะแนนแล้ว)
+      let grades = null, gradeRows = [];
+      if (itemProgress.some(p => p.filled > 0)) {
+        const data = await getScoreEntryData(id);
+        gradeRows = data.rows;
+        grades = {};
+        data.rows.forEach(r => { const g = r.status && r.status !== 'NORMAL' ? (STATUS_LABELS[r.status] || r.status) : String(r.grade); grades[g] = (grades[g] || 0) + 1; });
+      }
+      const gradeOf = Object.fromEntries(gradeRows.map(r => [r.student_id, r]));
+      const watch = [];
+      att.students.forEach(st => {
+        const reasons = [];
+        const nAbs = Object.entries(st.counts).filter(([k]) => absent.has(k)).reduce((t, [, n]) => t + n, 0);
+        if (nAbs >= 3) reasons.push(`ขาด ${nAbs} ครั้ง`);
+        if (st.totalChecked >= 5 && st.presentPct < 80) reasons.push(`มาเรียน ${Math.round(st.presentPct)}% (เสี่ยง มส)`);
+        const g = gradeOf[st.student_id];
+        if (g && g.status && g.status !== 'NORMAL') reasons.push(`สถานะ ${STATUS_LABELS[g.status] || g.status}`);
+        else if (g && String(g.grade) === '0' && itemProgress.every(p => p.missing === 0) && items.length) reasons.push('เกรด 0');
+        const nMiss = taskMissing.length ? tasks.filter(t => { const r = recs[t.task_id] || {}; return !r[st.student_id] || String(r[st.student_id].status_id) === 'MISSING'; }).length : 0;
+        if (tasks.length >= 2 && nMiss >= Math.max(2, Math.ceil(tasks.length / 2))) reasons.push(`ค้างงาน ${nMiss}/${tasks.length}`);
+        if (reasons.length) {
+          const stu = students.find(x => x.student_id === st.student_id) || {};
+          watch.push({ student_id: st.student_id, first_name: st.first_name, last_name: st.last_name, room: stu.room, reasons });
+        }
+      });
+      const periods = (subject.schedule || []).filter(p => Number(p.day) === dow).sort((a, b) => a.period - b.period);
+      return {
+        subject_id: id, subject_code: s.subject_code, subject_name: s.subject_name, level: s.level, rooms: subjRooms(subject),
+        students: students.length, periods, scheduled: (subject.schedule || []).length > 0, checkedToday: Object.keys(todayRec).length,
+        sessions: att.totalSessions, attendancePct: att.students.some(x => x.totalChecked) ? Math.round(att.students.reduce((t, x) => t + (x.totalChecked ? x.presentPct : 0), 0) / att.students.filter(x => x.totalChecked).length) : null,
+        items: itemProgress, itemsTotal: items.length, taskMissing: taskMissing.slice(0, 3), tasksTotal: tasks.length,
+        scoreFilled: itemProgress.reduce((t, p) => t + p.filled, 0), scoreSlots: items.length * normal.length,
+        grades, watch, locked: toBool((subject.config || {}).locked)
+      };
+    } catch (e) { return { subject_id: id, subject_code: s.subject_code, subject_name: s.subject_name, level: s.level, rooms: subjRooms(s), error: String(e.message || e) }; }
+  }));
+  return { today, dow, subjects: out };
+}
+
+// ครูประจำชั้น: สรุปห้องวันนี้ + นักเรียนขาดบ่อย
+export async function getHomeroomDashboard() {
+  const today = localDate();
+  const keys = seeAll() ? [] : (S.me.homerooms || []);
+  const absent = absentStatusIds(), late = lateStatusIds();
+  const rooms = await Promise.all(keys.map(async key => {
+    const [level, room] = key.split('|');
+    const rid = rosterId(S.term.sem, S.term.yr, level, room);
+    const [students, book] = await Promise.all([rosterStudents(S.term.sem, S.term.yr, level, room), read(ref('homeroomBook', rid)).catch(() => null)]);
+    const days = (book && book.days) || {};
+    const t = days[today] || {};
+    const counts = {};
+    Object.values(t).forEach(r => { counts[r.status_id] = (counts[r.status_id] || 0) + 1; });
+    const per = {};
+    Object.values(days).forEach(d => Object.entries(d || {}).forEach(([sid, r]) => {
+      const p = per[sid] = per[sid] || { abs: 0, late: 0 };
+      if (absent.has(String(r.status_id))) p.abs++; else if (late.has(String(r.status_id))) p.late++;
+    }));
+    const watch = students.map(s => ({ ...s, ...(per[s.student_id] || { abs: 0, late: 0 }) }))
+      .filter(s => s.abs >= 3 || s.late >= 5).sort((a, b) => b.abs - a.abs || b.late - a.late).slice(0, 10);
+    return { key, level, room, roster_id: rid, students: students.length, checked: Object.keys(t).length, counts, days: Object.keys(days).length, watch };
+  }));
+  return { today, rooms, statuses: S.attStatuses };
+}
+
+// ผู้ดูแลระบบ: ภาพรวมทั้งโรงเรียน
+export async function getAdminDashboard() {
+  requireAdmin();
+  const today = localDate(), dow = new Date().getDay();
+  const [users, catalog, rosters, daily] = await Promise.all([
+    getUsers(), getSubjectCatalog(S.term.sem, S.term.yr), termRosters(S.term.sem, S.term.yr), F.getDoc(ref('dailyLog', today)).then(d => d.exists() ? d.data() : {}).catch(() => ({}))
+  ]);
+  const active = users.filter(u => u.active !== false);
+  const known = new Set(active.map(u => nname(u.name)));
+  const roomList = rosters.map(r => ({ key: `${r.level}|${r.room}`, level: r.level, room: r.room, roster_id: r._id, count: Object.values(r.students || {}).filter(s => s.status !== 'INACTIVE').length }))
+    .filter(r => r.count > 0).sort((a, b) => (a.level + '/' + a.room).localeCompare(b.level + '/' + b.room, 'th', { numeric: true }));
+  const hrKeys = new Set(active.flatMap(u => u.homerooms || []));
+  const doneSub = (daily && daily.subjects) || {}, doneHr = (daily && daily.homerooms) || {};
+  // วิชาที่มีคาบวันนี้ (ถ้าไม่มีตารางสอน ใช้ทุกวิชา)
+  const hasSchedule = catalog.some(s => (s.schedule || []).length);
+  const todaySubs = catalog.filter(s => !hasSchedule || (s.schedule || []).some(p => Number(p.day) === dow));
+  const byTeacher = {};
+  todaySubs.forEach(s => {
+    const ts = s.teachers.length ? s.teachers : [''];
+    ts.forEach(e => {
+      const t = byTeacher[e] = byTeacher[e] || { email: e, name: e ? ((active.find(u => u.email === e) || {}).name || (s.teacher_names || {})[e] || e) : 'ยังไม่มีครู', done: [], todo: [] };
+      (doneSub[s.subject_id] ? t.done : t.todo).push({ subject_id: s.subject_id, label: `${s.subject_code || ''} ${s.subject_name} ${s.level}/${s.rooms.join('+')}`, periods: (s.schedule || []).filter(p => Number(p.day) === dow).map(p => p.period) });
+    });
+  });
+  // แผนที่ความร้อน: ขาดเรียนตอนเช้า (ห้อง × วัน) จากการเช็คชื่อประจำชั้น 10 วันล่าสุด
+  const absent = absentStatusIds();
+  const books = await Promise.all(roomList.map(r => read(ref('homeroomBook', r.roster_id)).catch(() => null)));
+  const allDates = [...new Set(books.flatMap(b => Object.keys((b && b.days) || {})))].sort().slice(-10);
+  const heat = roomList.map((r, i) => ({ key: r.key, count: r.count, cells: allDates.map(d => {
+    const day = ((books[i] && books[i].days) || {})[d];
+    return day ? Object.values(day).filter(x => absent.has(String(x.status_id))).length : null;
+  }) }));
+  const plannedMissing = [...new Set(catalog.flatMap(s => (s.planned_teachers || []).filter(n => !known.has(nname(n)))))];
+  return {
+    today, dow, hasSchedule,
+    counts: { students: roomList.reduce((t, r) => t + r.count, 0), rooms: roomList.length, subjects: catalog.length, teachers: active.length },
+    todaySubjects: todaySubs.length, todayDone: todaySubs.filter(s => doneSub[s.subject_id]).length,
+    teachers: Object.values(byTeacher).sort((a, b) => b.todo.length - a.todo.length || a.name.localeCompare(b.name, 'th')),
+    homeroomToday: roomList.map(r => ({ key: r.key, done: !!doneHr[r.roster_id], absent: doneHr[r.roster_id] ? doneHr[r.roster_id].absent : null, hasTeacher: hrKeys.has(r.key) })),
+    issues: {
+      noTeacher: catalog.filter(s => !s.teachers.length).length,
+      plannedMissing,
+      roomsNoHomeroom: roomList.filter(r => !hrKeys.has(r.key)).map(r => r.key),
+      weightNot100: catalog.filter(s => Math.round(s.item_total) !== 100).length,
+      noItems: catalog.filter(s => !s.item_count).length
+    },
+    heat: { dates: allDates, rows: heat }
+  };
+}

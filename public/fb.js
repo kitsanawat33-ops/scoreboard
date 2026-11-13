@@ -9,7 +9,7 @@ const [appMod, authMod, fsMod] = await Promise.all([
 import { firebaseConfig, SAME_DOMAIN_AUTH } from './config.js';
 
 // โดเมนสำหรับหน้าล็อกอิน: ถ้าเปิดใช้ ให้ใช้โดเมนเดียวกับที่เปิดแอป (Firebase Hosting มี /__/auth/ ให้ทุกโดเมน)
-const HOSTS = ['ppj-scoreboard.web.app', 'ppj-scoreboard.firebaseapp.com'];
+const HOSTS = [`${firebaseConfig.projectId}.web.app`, `${firebaseConfig.projectId}.firebaseapp.com`];
 // วิธีสำรอง: ผู้ใช้กด "ลองวิธีสำรอง" ที่หน้าล็อกอิน → กลับไปใช้โดเมน firebaseapp.com แบบเดิม
 let legacy = false; try { legacy = localStorage.getItem('classhub_auth_legacy') === '1'; } catch (e) {}
 export const authDomain = (SAME_DOMAIN_AUTH && !legacy && HOSTS.includes(location.hostname)) ? location.hostname : firebaseConfig.authDomain;
